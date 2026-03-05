@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 import uuid
 
 from typedb_ops_spine.diagnostics import emit_typedb_diag
@@ -53,6 +54,15 @@ def main() -> int:
     p.add_argument(
         "--migrations-dir",
         help="Optional migrations directory for bootstrap.",
+    )
+    p.add_argument("--address", default=os.getenv("TYPEDB_ADDRESS"))
+    p.add_argument("--host", default=os.getenv("TYPEDB_HOST", "localhost"))
+    p.add_argument("--port", default=os.getenv("TYPEDB_PORT", "1729"))
+    p.add_argument(
+        "--username", default=os.getenv("TYPEDB_USERNAME", "admin"),
+    )
+    p.add_argument(
+        "--password", default=os.getenv("TYPEDB_PASSWORD", "password"),
     )
     args = p.parse_args()
 
@@ -135,7 +145,7 @@ def main() -> int:
             import time
             print(f"Verifying canary {canary_tid} (with 1s pause)...")
             time.sleep(1.0)
-            
+
             v_q = (
                 f'match $t isa tenant, has tenant-id "{canary_tid}"; '
                 f"select $t;"
@@ -151,7 +161,7 @@ def main() -> int:
                         address=address,
                         stage=f"canary_verify_attempt_{attempt}",
                     )
-                    
+
                     if res:
                         print(f"  [PASS] Canary found on attempt {attempt}.")
                         success = True
