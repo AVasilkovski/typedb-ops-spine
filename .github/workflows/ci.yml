@@ -133,10 +133,9 @@ jobs:
           path: ci_artifacts/
           retention-days: 7
 
-  # Optional: test with newer TypeDB version (manual trigger only)
+  # Test with newer TypeDB version (automated compat check)
   test-compat:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         typedb-version: ["3.8.1"]
