@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import traceback
 import uuid
 
 from typedb_ops_spine.diagnostics import emit_typedb_diag
@@ -150,7 +149,7 @@ def main() -> int:
                 f'match $t isa tenant, has tenant-id "{canary_tid}"; '
                 f"select $t;"
             )
-            
+
             success = False
             for attempt in range(1, 4):
                 with driver.transaction(db_name, TransactionType.READ) as rtx:
