@@ -58,13 +58,14 @@ def main() -> int:
 
     os.makedirs("ci_artifacts", exist_ok=True)
 
-    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
-    from typedb_ops_spine.schema_apply import apply_schema, resolve_schema_files
-    from typedb_ops_spine.migrate import run_migrations
     import importlib.metadata as md
 
     import typedb
-    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+    from typedb.driver import TransactionType
+
+    from typedb_ops_spine.migrate import run_migrations
+    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
+    from typedb_ops_spine.schema_apply import apply_schema, resolve_schema_files
 
     db_name = args.database
     address = _resolve_address(args)
