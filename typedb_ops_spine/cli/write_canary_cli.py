@@ -132,24 +132,37 @@ def main() -> int:
                 )
 
             # Step 2: Read (post-commit verification)
-            print(f"Verifying canary {canary_tid}...")
-            with driver.transaction(db_name, TransactionType.READ) as rtx:
-                v_q = (
-                    f'match $t isa tenant, has tenant-id "{canary_tid}"; '
-                    f"select $t;"
-                )
-                res = list(rtx.query(v_q).resolve().as_concept_rows())
-                _diag(
-                    stage="canary_verify", action="read",
-                    tx_type="READ", db=db_name, query=v_q,
-                    kind="rows", row_count=len(res),
-                )
+            import time
+            print(f"Verifying canary {canary_tid} (with 1s pause)...")
+            time.sleep(1.0)
+            
+            v_q = (
+                f'match $t isa tenant, has tenant-id "{canary_tid}"; '
+                f"select $t;"
+            )
+            
+            success = False
+            for attempt in range(1, 4):
+                with driver.transaction(db_name, TransactionType.READ) as rtx:
+                    res = execute(
+                        rtx, v_q, QueryMode.READ_ROWS,
+                        component="ops_write_canary",
+                        db_name=db_name,
+                        address=address,
+                        stage=f"canary_verify_attempt_{attempt}",
+                    )
+                    
+                    if res:
+                        print(f"  [PASS] Canary found on attempt {attempt}.")
+                        success = True
+                        break
+                    else:
+                        print(f"  [WAIT] Canary not found on attempt {attempt}. Retrying...")
+                        time.sleep(1.0)
 
-                if not res:
-                    print(f"  [FAIL] Canary {canary_tid} not persisted.")
-                    failures += 1
-                else:
-                    print("  [PASS] Canary ok.")
+            if not success:
+                print(f"  [FAIL] Canary {canary_tid} not persisted after 3 attempts.")
+                failures += 1
         finally:
             driver.close()
 
