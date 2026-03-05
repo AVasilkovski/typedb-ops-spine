@@ -1,0 +1,94 @@
+# Example GitHub Actions CI using typedb-ops-spine
+#
+# Copy this into your project's .github/workflows/ directory and adjust
+# the schema/migrations paths to match your project structure.
+
+name: CI (TypeDB)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typedb-ci:
+    runs-on: ubuntu-latest
+
+    services:
+      typedb:
+        image: typedb/typedb:3.8.0
+        ports:
+          - 1729:1729
+
+    env:
+      TYPEDB_ADDRESS: "localhost:1729"
+      TYPEDB_DATABASE: my_project_db
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install typedb-ops-spine
+          pip install -e .  # your project
+
+      - name: Wait for TypeDB
+        run: |
+          python -c "
+          import socket, time, sys
+          deadline = time.time() + 60
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection(('localhost', 1729), timeout=2):
+                      sys.exit(0)
+              except OSError:
+                  time.sleep(1)
+          sys.exit(1)
+          "
+
+      - name: Apply schema
+        run: ops-apply-schema --schema schema.tql --database $TYPEDB_DATABASE
+
+      - name: Run migrations
+        run: ops-migrate --migrations-dir migrations --database $TYPEDB_DATABASE
+
+      - name: Schema health check
+        run: ops-schema-health --migrations-dir migrations --database $TYPEDB_DATABASE
+
+      - name: Write canary
+        if: always()
+        run: |
+          set +e
+          ops-write-canary --database $TYPEDB_DATABASE
+          echo "CANARY=$?" >> $GITHUB_ENV
+
+      - name: Write probe
+        if: always()
+        run: |
+          set +e
+          ops-min-write-probe --schema schema.tql --migrations-dir migrations
+          echo "PROBE=$?" >> $GITHUB_ENV
+
+      - name: Extract TSV
+        if: always()
+        run: ops-tsv-extract
+
+      - name: Fail on canary/probe error
+        if: always()
+        run: |
+          [ "${CANARY:-0}" = "0" ] && [ "${PROBE:-0}" = "0" ] || exit 1
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: ci_artifacts/**
+          retention-days: 7

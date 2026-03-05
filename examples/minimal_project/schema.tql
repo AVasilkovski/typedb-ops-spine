@@ -1,0 +1,66 @@
+define
+
+  # --- Core tenant entity ---
+  entity tenant,
+    owns tenant-id;
+
+  attribute tenant-id,
+    value string;
+
+  # --- Run capsule (session tracking) ---
+  entity run-capsule,
+    owns capsule-id,
+    owns tenant-id,
+    owns session-id,
+    owns created-at,
+    owns query-hash,
+    owns scope-lock-id,
+    owns intent-id,
+    owns proposal-id;
+
+  attribute capsule-id,
+    value string;
+
+  attribute session-id,
+    value string;
+
+  attribute created-at,
+    value datetime;
+
+  attribute query-hash,
+    value string;
+
+  attribute scope-lock-id,
+    value string;
+
+  attribute intent-id,
+    value string;
+
+  attribute proposal-id,
+    value string;
+
+  # --- Tenant ownership relation ---
+  relation tenant-ownership,
+    relates owner,
+    relates owned;
+
+  entity tenant,
+    plays tenant-ownership:owner;
+
+  entity run-capsule,
+    plays tenant-ownership:owned;
+
+  # --- Schema version tracking ---
+  entity schema_version,
+    owns ordinal,
+    owns git-commit,
+    owns applied-at;
+
+  attribute ordinal,
+    value long;
+
+  attribute git-commit,
+    value string;
+
+  attribute applied-at,
+    value datetime;

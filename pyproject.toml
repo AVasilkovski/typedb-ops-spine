@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/AVasilkovski/typedb-ops-spine"
+Repository = "https://github.com/AVasilkovski/typedb-ops-spine"
+
+[project]
+name = "typedb-ops-spine"
+version = "0.1.0"
+description = "Deterministic TypeDB 3.8 schema operations, diagnostics, and CI forensics toolkit"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "typedb-driver==3.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+ops-apply-schema = "typedb_ops_spine.cli.apply_schema_cli:main"
+ops-migrate = "typedb_ops_spine.cli.migrate_cli:main"
+ops-schema-health = "typedb_ops_spine.cli.schema_health_cli:main"
+ops-write-canary = "typedb_ops_spine.cli.write_canary_cli:main"
+ops-min-write-probe = "typedb_ops_spine.cli.min_write_probe_cli:main"
+ops-tsv-extract = "typedb_ops_spine.cli.tsv_extract_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["typedb_ops_spine*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
