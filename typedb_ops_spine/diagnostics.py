@@ -77,6 +77,8 @@ def emit_typedb_diag(
         "row_count": int(row_count or 0),
         "doc_count": int(doc_count or 0),
         "error_code": (error_code or "")[:64],
+        "error_message": (error_message or "")[:180],
+        # Backward-compatible key kept for older readers.
         "error_message_trunc": (error_message or "")[:180],
     }
     # Forward-compatible: merge any extra fields

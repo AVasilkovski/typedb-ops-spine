@@ -73,7 +73,12 @@ def extract_tsv(
                 str(obj.get("as_ok_attempted", obj.get("as_ok_called", "-"))),
                 str(obj.get("as_ok_succeeded", "-")),
                 str(obj.get("error_code", "")),
-                str((obj.get("error_message", "") or "")[:100]),
+                str(
+                    (
+                        obj.get("error_message", obj.get("error_message_trunc", ""))
+                        or ""
+                    )[:100]
+                ),
                 str(obj.get("query_head", "")),
             ]
             print("\t".join(row), file=out)

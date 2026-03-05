@@ -41,6 +41,7 @@ def connect_with_retries(
 
     last_err: Exception | None = None
     for i in range(1, retries + 1):
+        driver = None
         try:
             driver = TypeDB.driver(address, creds, opts)
             # Real round-trip: force the driver to list databases
@@ -49,6 +50,11 @@ def connect_with_retries(
             return driver
         except Exception as e:
             last_err = e
+            if driver is not None:
+                try:
+                    driver.close()
+                except Exception as close_err:
+                    logger.debug("Failed to close TypeDB driver after retry failure: %s", close_err)
             logger.warning(
                 "Waiting for TypeDB (%d/%d): %s", i, retries, e
             )
