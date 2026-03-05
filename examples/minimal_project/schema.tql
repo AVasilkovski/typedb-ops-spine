@@ -57,7 +57,7 @@ define
     owns applied-at;
 
   attribute ordinal,
-    value long;
+    value integer;
 
   attribute git-commit,
     value string;
