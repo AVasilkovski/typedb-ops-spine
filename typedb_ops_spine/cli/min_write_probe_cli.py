@@ -157,8 +157,9 @@ def main() -> int:
         return 1
 
     tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
+    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
     creds = Credentials(args.username, args.password)
-    opts = DriverOptions(is_tls_enabled=tls)
+    opts = DriverOptions(is_tls_enabled=tls, tls_root_ca_path=ca_path)
 
     failures = 0
     t_lit = _typedb_datetime_now_utc_literal("microseconds")

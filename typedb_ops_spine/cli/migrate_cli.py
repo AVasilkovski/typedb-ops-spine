@@ -80,6 +80,18 @@ def main() -> int:
 
     print(f"[ops-migrate] Found {len(all_migrations)} migrations in {mig_dir}")
 
+    if args.dry_run:
+        planned = [
+            (ordinal, path)
+            for ordinal, path in all_migrations
+            if args.target is None or ordinal <= args.target
+        ]
+        print("[ops-migrate] dry-run: planned migrations:")
+        for ordinal, path in planned:
+            print(f"  - {ordinal:03d} {path.name}")
+        print(f"[ops-migrate] dry-run complete. Planned {len(planned)} migrations.")
+        return 0
+
     address = args.address if args.address else f"{args.host}:{args.port}"
     print(f"[ops-migrate] Connecting to {address}")
 
