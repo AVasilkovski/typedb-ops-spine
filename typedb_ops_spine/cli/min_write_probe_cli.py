@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -93,6 +94,7 @@ def _run_bootstrap(
         return True
     except Exception as e:
         print(f"Bootstrap failed: {e}")
+        traceback.print_exc()
         return False
 
 
@@ -324,4 +326,5 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as e:
         print(f"Probe FATAL: {e}")
+        traceback.print_exc()
         sys.exit(1)

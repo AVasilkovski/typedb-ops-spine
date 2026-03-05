@@ -87,7 +87,10 @@ jobs:
         if: always()
         run: |
           set +e
-          ops-write-canary --database "ops_spine_canary"
+          ops-write-canary \
+            --database "ops_spine_canary" \
+            --schema examples/minimal_project/schema.tql \
+            --migrations-dir examples/minimal_project/migrations
           echo "CANARY_EXIT_CODE=$?" >> $GITHUB_ENV
           set -e
 

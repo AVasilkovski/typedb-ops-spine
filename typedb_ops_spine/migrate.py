@@ -186,10 +186,11 @@ def apply_migration(
     schema = migration_file.read_text(encoding="utf-8").strip()
 
     # Migration hygiene: must start with define/undefine/redefine
-    if not any(schema.lower().startswith(kw) for kw in ["define", "undefine", "redefine"]):
+    lines = [line.strip() for line in schema.splitlines() if line.strip() and not line.strip().startswith("#")]
+    if not lines or not any(lines[0].lower().startswith(kw) for kw in ["define", "undefine", "redefine"]):
         raise ValueError(
             f"Migration hygiene violation: {migration_file.name} must start with "
-            f"define/undefine/redefine. Found: {schema[:20]}..."
+            f"define/undefine/redefine. Found: {schema[:50].replace('\n', ' ')}..."
         )
 
     file_hash = hashlib.sha256(schema.encode("utf-8")).hexdigest()[:12]

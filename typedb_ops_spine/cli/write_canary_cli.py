@@ -46,19 +46,21 @@ def main() -> int:
         "--database",
         default=os.getenv("TYPEDB_DATABASE", "default_db"),
     )
-    p.add_argument("--address", default=os.getenv("TYPEDB_ADDRESS"))
-    p.add_argument("--host", default=os.getenv("TYPEDB_HOST", "localhost"))
-    p.add_argument("--port", default=os.getenv("TYPEDB_PORT", "1729"))
     p.add_argument(
-        "--username", default=os.getenv("TYPEDB_USERNAME", "admin"),
+        "--schema",
+        help="Optional schema file for bootstrap.",
     )
     p.add_argument(
-        "--password", default=os.getenv("TYPEDB_PASSWORD", "password"),
+        "--migrations-dir",
+        help="Optional migrations directory for bootstrap.",
     )
     args = p.parse_args()
 
     os.makedirs("ci_artifacts", exist_ok=True)
 
+    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
+    from typedb_ops_spine.schema_apply import apply_schema, resolve_schema_files
+    from typedb_ops_spine.migrate import run_migrations
     import importlib.metadata as md
 
     import typedb
@@ -66,6 +68,8 @@ def main() -> int:
 
     db_name = args.database
     address = _resolve_address(args)
+    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
+    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     try:
         driver_version = md.version("typedb-driver")
@@ -87,15 +91,29 @@ def main() -> int:
         address=address,
     )
 
-    canary_tid = f"canary-{uuid.uuid4().hex[:6]}"
-    creds = Credentials(args.username, args.password)
-    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
-    opts = DriverOptions(is_tls_enabled=tls)
-
     failures = 0
     try:
-        with TypeDB.driver(address, creds, opts) as driver:
+        # Step 0: Connect and Ensure DB
+        driver = connect_with_retries(
+            address, args.username, args.password,
+            tls=tls, ca_path=ca_path, retries=10,
+        )
+        try:
+            ensure_database(driver, db_name)
+
+            # Step 0.1: Optional Bootstrap
+            if args.schema:
+                schema_paths = resolve_schema_files([args.schema])
+                print(f"Bootstrapping schema: {schema_paths}")
+                apply_schema(driver, db_name, schema_paths)
+
+            if args.migrations_dir:
+                from pathlib import Path
+                print(f"Bootstrapping migrations: {args.migrations_dir}")
+                run_migrations(driver, db_name, Path(args.migrations_dir))
+
             # Step 1: Write
+            canary_tid = f"canary-{uuid.uuid4().hex[:6]}"
             print(f"Writing canary {canary_tid}...")
             with driver.transaction(db_name, TransactionType.WRITE) as tx:
                 q = f'insert $t isa tenant, has tenant-id "{canary_tid}";'
@@ -131,9 +149,13 @@ def main() -> int:
                     failures += 1
                 else:
                     print("  [PASS] Canary ok.")
+        finally:
+            driver.close()
 
     except Exception as e:
+        import traceback
         print(f"  [ERROR] Canary failed: {e}")
+        traceback.print_exc()
         _diag(
             stage="canary_error", action="exception",
             tx_type="WRITE", db=db_name, query="canary_flow",
