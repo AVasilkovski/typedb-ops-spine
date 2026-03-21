@@ -1,0 +1,94 @@
+name: Staging Cloud Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/staging-schema-deploy.yml"
+      - "typedb_ops_spine/**"
+      - "examples/minimal_project/**"
+      - "pyproject.toml"
+      - "README.md"
+  workflow_dispatch: {}
+
+jobs:
+  deploy-schema:
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    env:
+      CI_ARTIFACTS_DIR: ci_artifacts
+      TYPEDB_ADDRESS: "${{ secrets.TYPEDB_ADDRESS }}"
+      TYPEDB_DATABASE: "${{ secrets.TYPEDB_DATABASE }}"
+      TYPEDB_USERNAME: "${{ secrets.TYPEDB_USERNAME }}"
+      TYPEDB_PASSWORD: "${{ secrets.TYPEDB_PASSWORD }}"
+      TYPEDB_TLS: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ensure CI artifacts directory
+        run: mkdir -p ci_artifacts
+
+      - name: Decode TypeDB root CA (optional)
+        env:
+          TYPEDB_ROOT_CA_B64: "${{ secrets.TYPEDB_ROOT_CA_B64 }}"
+        run: |
+          if [ -n "${TYPEDB_ROOT_CA_B64:-}" ]; then
+            echo "$TYPEDB_ROOT_CA_B64" | base64 -d > ca.pem
+            echo "TYPEDB_ROOT_CA_PATH=$(pwd)/ca.pem" >> "$GITHUB_ENV"
+          fi
+
+      - name: Guarded scrub pass (cloud)
+        run: |
+          ops-apply-schema \
+            --schema examples/minimal_project/schema.tql \
+            --database "$TYPEDB_DATABASE" \
+            --auto-migrate-redeclarations \
+            --scrub-only
+
+      - name: Apply example schema (cloud)
+        run: |
+          ops-apply-schema \
+            --schema examples/minimal_project/schema.tql \
+            --database "$TYPEDB_DATABASE" \
+            --migrations-dir examples/minimal_project/migrations \
+            --auto-migrate-redeclarations \
+            --stamp-schema-version-head
+
+      - name: Run example migrations (cloud)
+        run: |
+          ops-migrate \
+            --migrations-dir examples/minimal_project/migrations \
+            --database "$TYPEDB_DATABASE"
+
+      - name: Verify schema health (cloud)
+        run: |
+          ops-schema-health \
+            --migrations-dir examples/minimal_project/migrations \
+            --database "$TYPEDB_DATABASE"
+
+      - name: Run smoke diagnostics (cloud)
+        run: >
+          ops-typedb-diag --database "$TYPEDB_DATABASE" --require-db
+          --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-cloud-artifacts-${{ github.run_id }}
+          path: ci_artifacts/
+          retention-days: 7

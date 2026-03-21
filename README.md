@@ -1,6 +1,6 @@
 # typedb-ops-spine
 
-**Deterministic TypeDB 3.8 schema operations, diagnostics, and CI forensics toolkit.**
+**Deterministic TypeDB 3.8 schema operations, smoke diagnostics, and CI forensics toolkit.**
 
 [![CI](https://github.com/AVasilkovski/typedb-ops-spine/actions/workflows/ci.yml/badge.svg)](https://github.com/AVasilkovski/typedb-ops-spine/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
@@ -15,13 +15,15 @@
 | Capability | Tool |
 |---|---|
 | **Schema apply** | `ops-apply-schema` — deterministic schema application with glob-killer path resolution |
+| **Schema scrub** | `ops-apply-schema --auto-migrate-redeclarations` — guarded `undefine owns/plays` planning for inherited redeclarations |
 | **Migrations** | `ops-migrate` — ordinal-based, gap-detecting, hash-logged migrations |
 | **Health check** | `ops-schema-health` — drift detection (repo ordinals vs DB state) |
+| **Smoke diagnostics** | `ops-typedb-diag` — connectivity, DB-presence, and optional smoke-query verification |
 | **Readiness** | `connect_with_retries()` — real round-trip verification (`databases.all()`) |
 | **Safe execution** | `execute()` — answer-kind barrier with Rows → Docs → OK ordering |
 | **Diagnostics** | `emit_typedb_diag()` — keyword-only JSONL emission + TSV extractor |
-| **Canary** | `ops-write-canary` — write→commit→read durability check |
-| **Probe** | `ops-min-write-probe` — 5-variant write-shape arbiter (fail-slow) |
+| **Canary** | `ops-write-canary` — write→commit→read durability check for the packaged tenant-based profile |
+| **Probe** | `ops-min-write-probe` — 5-variant write-shape arbiter for the packaged tenant/run-capsule profile |
 
 ---
 
@@ -33,22 +35,60 @@ pip install typedb-ops-spine
 # Apply schema
 ops-apply-schema --schema schema.tql --database my_db
 
+# Existing databases with inherited redeclarations:
+ops-apply-schema \
+  --schema schema.tql \
+  --database my_db \
+  --auto-migrate-redeclarations
+
 # Run migrations
 ops-migrate --migrations-dir migrations --database my_db
 
 # Check for schema drift
 ops-schema-health --migrations-dir migrations --database my_db
 
+# Smoke diagnostics (DB presence only)
+ops-typedb-diag --database my_db --require-db
+
 # Write/read durability canary
+# Targets the packaged tenant profile by default
 ops-write-canary --database my_db
+
+# Tenant-scoped canary (SuperHyperion-profile)
+# Requires schema with 'tenant' and 'run-capsule' types
+ops-write-canary --database my_db --tenant-id "tenant-1" --ownership-rel auto
+
+# Smoke diagnostics with an explicit rows query
+ops-typedb-diag \
+  --database my_db \
+  --require-db \
+  --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
 
 # Extract CI diagnostics as TSV
 ops-tsv-extract
 ```
 
+### Cloud / TLS
+
+`typedb-ops-spine` accepts local Core addresses (`localhost:1729`) and normalizes
+Cloud-style addresses (`https://cloud.typedb.com` → `https://cloud.typedb.com:443`
+when paired with `TYPEDB_PORT=443`). TLS is inferred from `https://...` addresses
+unless `TYPEDB_TLS` explicitly overrides it.
+
+```bash
+export TYPEDB_ADDRESS="https://cloud.typedb.com"
+export TYPEDB_PORT="443"
+export TYPEDB_USERNAME="admin"
+export TYPEDB_PASSWORD="password"
+export TYPEDB_ROOT_CA_PATH="/path/to/ca.pem"
+
+ops-typedb-diag --database my_db --require-db
+```
+
 ### As a library
 
 ```python
+from typedb.driver import TransactionType
 from typedb_ops_spine import connect_with_retries, execute, QueryMode
 
 driver = connect_with_retries("localhost:1729", "admin", "password")
@@ -141,9 +181,13 @@ services:
     ports: ["1729:1729"]
 
 steps:
-  - run: ops-apply-schema --schema schema.tql
+  - run: ops-apply-schema --schema schema.tql --auto-migrate-redeclarations --scrub-only
+  - run: ops-apply-schema --schema schema.tql --migrations-dir migrations --stamp-schema-version-head
   - run: ops-migrate --migrations-dir migrations
   - run: ops-schema-health --migrations-dir migrations
+  - run: >
+      ops-typedb-diag --require-db
+      --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
   - if: always()
     run: |
       set +e
@@ -158,28 +202,30 @@ steps:
 
 ## Release Plan
 
-### v0.1.0 (current)
+### v0.2.0 (current)
 
 - Core ops: schema apply, migrate, health check, readiness
+- Guarded schema scrubber for inherited owns/plays redeclarations
+- Smoke diagnostics CLI for connectivity, DB presence, and optional smoke-query checks
+- Cloud/TLS address normalization and HTTPS-based TLS inference
 - Execution barrier with Rows→Docs→OK invariant
 - Diagnostics JSONL + TSV extractor
 - Canary + Arbiter probe (5 variants)
-- CI workflow pinned to TypeDB 3.8.0
+- CI workflow pinned to TypeDB 3.8.0 plus 3.8.1 compat
 
-### v0.2.0 (planned)
+### v0.3.0 (planned)
 
-- `--auto-migrate-redeclarations` (experimental)
-- Quote normalization (`_q()` helper)
-- SuperHyperion can `pip install typedb-ops-spine` and vendor the library
-  without refactoring (additive dependency, no breaking changes)
+- Stronger content-level drift / schema fingerprint parity
+- Better crash-recovery semantics around authoritative apply + migration bookkeeping
+- Broader cloud/TLS integration coverage
 
 ### How SuperHyperion can later adopt ops-spine
 
-1. Add `typedb-ops-spine>=0.1.0` to SuperHyperion's `requirements.txt`
+1. Add `typedb-ops-spine>=0.2.0` to SuperHyperion's `requirements.txt`
 2. Replace `from src.db.typedb_exec import execute` with `from typedb_ops_spine import execute`
 3. Replace `from src.db.typedb_diagnostics import emit_typedb_diag` with `from typedb_ops_spine import emit_typedb_diag`
 4. Remove duplicated `scripts/apply_schema.py`, `scripts/migrate.py`, etc.
-5. Update CI to use `ops-apply-schema`, `ops-migrate` CLI commands
+5. Update CI to use `ops-apply-schema`, `ops-migrate`, `ops-schema-health`, and `ops-typedb-diag`
 
 This is a **non-breaking, additive** migration — SuperHyperion can adopt incrementally.
 

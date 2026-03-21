@@ -11,6 +11,13 @@ import os
 import sys
 
 
+def _env_tls_override() -> bool | None:
+    raw = os.getenv("TYPEDB_TLS")
+    if raw is None:
+        return None
+    return raw.lower() == "true"
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="ops-schema-health",
@@ -36,21 +43,26 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from typedb_ops_spine.readiness import connect_with_retries
+    from typedb_ops_spine.readiness import (
+        connect_with_retries,
+        infer_tls_enabled,
+        resolve_connection_address,
+    )
     from typedb_ops_spine.schema_health import check_health
 
-    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
+    tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
-    address = args.address if args.address else f"{args.host}:{args.port}"
+    address = resolve_connection_address(args.address, args.host, args.port)
+    resolved_tls = infer_tls_enabled(address, tls)
 
     if not address or address == ":":
         print("[ops-schema-health] SKIP: missing address")
         return 0
 
-    print(f"[ops-schema-health] Connecting to {address}")
+    print(f"[ops-schema-health] Connecting to {address} tls={resolved_tls}")
     driver = connect_with_retries(
-        address, args.username, args.password, tls, ca_path,
+        address, args.username, args.password, resolved_tls, ca_path,
     )
     try:
         healthy, repo_ord, db_ord = check_health(

@@ -54,13 +54,28 @@ jobs:
           "
 
       - name: Apply schema
-        run: ops-apply-schema --schema schema.tql --database $TYPEDB_DATABASE
+        run: |
+          ops-apply-schema \
+            --schema schema.tql \
+            --database $TYPEDB_DATABASE \
+            --auto-migrate-redeclarations \
+            --scrub-only
+          ops-apply-schema \
+            --schema schema.tql \
+            --database $TYPEDB_DATABASE \
+            --migrations-dir migrations \
+            --stamp-schema-version-head
 
       - name: Run migrations
         run: ops-migrate --migrations-dir migrations --database $TYPEDB_DATABASE
 
       - name: Schema health check
         run: ops-schema-health --migrations-dir migrations --database $TYPEDB_DATABASE
+
+      - name: Smoke diagnostics
+        run: >
+          ops-typedb-diag --database $TYPEDB_DATABASE --require-db
+          --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
 
       - name: Write canary
         if: always()
