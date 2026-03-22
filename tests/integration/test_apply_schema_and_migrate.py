@@ -130,3 +130,25 @@ class TestApplySchemaAndMigrate:
             driver, isolated_db, str(example_migrations),
         )
         assert healthy, f"Expected parity, got repo={repo_ord} db={db_ord}"
+
+    def test_stamp_schema_version_head_bootstraps_repo_ordinal(
+        self, driver, isolated_db, example_schema, example_migrations,
+    ):
+        """Authoritative apply + head stamp should leave no pending bootstrap migration."""
+        from typedb_ops_spine.migrate import run_migrations
+        from typedb_ops_spine.readiness import ensure_database
+        from typedb_ops_spine.schema_apply import (
+            apply_schema,
+            get_current_schema_version,
+            head_migration_ordinal,
+            stamp_schema_version_head,
+        )
+
+        ensure_database(driver, isolated_db)
+        apply_schema(driver, isolated_db, [example_schema])
+
+        head = head_migration_ordinal(example_migrations)
+        stamp_schema_version_head(driver, isolated_db, head)
+
+        assert get_current_schema_version(driver, isolated_db) == head
+        assert run_migrations(driver, isolated_db, example_migrations) == 0
