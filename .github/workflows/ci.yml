@@ -77,6 +77,40 @@ jobs:
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short
 
+      - name: Guarded scrub pass (example profile)
+        run: |
+          ops-apply-schema \
+            --schema examples/minimal_project/schema.tql \
+            --database "$TYPEDB_DATABASE" \
+            --auto-migrate-redeclarations \
+            --scrub-only
+
+      - name: Apply example schema (packaged CLI)
+        run: |
+          ops-apply-schema \
+            --schema examples/minimal_project/schema.tql \
+            --database "$TYPEDB_DATABASE" \
+            --migrations-dir examples/minimal_project/migrations \
+            --auto-migrate-redeclarations \
+            --stamp-schema-version-head
+
+      - name: Run example migrations (packaged CLI)
+        run: |
+          ops-migrate \
+            --migrations-dir examples/minimal_project/migrations \
+            --database "$TYPEDB_DATABASE"
+
+      - name: Verify example schema health (packaged CLI)
+        run: |
+          ops-schema-health \
+            --migrations-dir examples/minimal_project/migrations \
+            --database "$TYPEDB_DATABASE"
+
+      - name: Run smoke diagnostics (packaged CLI)
+        run: >
+          ops-typedb-diag --database "$TYPEDB_DATABASE" --require-db
+          --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
+
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
 
@@ -90,7 +124,8 @@ jobs:
           ops-write-canary \
             --database "ops_spine_canary" \
             --schema examples/minimal_project/schema.tql \
-            --migrations-dir examples/minimal_project/migrations
+            --migrations-dir examples/minimal_project/migrations \
+            --stamp-schema-version-head
           echo "CANARY_EXIT_CODE=$?" >> $GITHUB_ENV
           set -e
 
@@ -101,7 +136,8 @@ jobs:
           ops-min-write-probe \
             --database-prefix ops_probe \
             --schema examples/minimal_project/schema.tql \
-            --migrations-dir examples/minimal_project/migrations
+            --migrations-dir examples/minimal_project/migrations \
+            --stamp-schema-version-head
           echo "PROBE_EXIT_CODE=$?" >> $GITHUB_ENV
           set -e
 

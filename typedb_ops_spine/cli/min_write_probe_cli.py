@@ -3,6 +3,7 @@ CLI entry point: ops-min-write-probe — The Arbiter
 
 PROVES: Which write shapes and materialization patterns persist in the canonical schema.
 Operates as a fail-slow diagnostic tool using isolated databases.
+This probe currently targets the packaged tenant/run-capsule example profile.
 
 5 Variants:
   1. tenant_only_insert_ok       — simple insert
@@ -25,6 +26,13 @@ from datetime import datetime, timezone
 
 from typedb_ops_spine.diagnostics import emit_typedb_diag
 from typedb_ops_spine.exec import _get_error_code
+
+
+def _env_tls_override() -> bool | None:
+    raw = os.getenv("TYPEDB_TLS")
+    if raw is None:
+        return None
+    return raw.lower() == "true"
 
 
 def _diag(
@@ -58,21 +66,39 @@ def _run_bootstrap(
     password: str,
     schema_file: str,
     migrations_dir: str,
+    stamp_head: bool = False,
 ) -> bool:
     """Bootstrap an isolated database using library functions (no subprocess)."""
     from pathlib import Path
 
     from typedb_ops_spine.migrate import run_migrations
-    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
-    from typedb_ops_spine.schema_apply import apply_schema, resolve_schema_files
+    from typedb_ops_spine.readiness import (
+        connect_with_retries,
+        ensure_database,
+        infer_tls_enabled,
+    )
+    from typedb_ops_spine.schema_apply import (
+        apply_schema,
+        get_current_schema_version,
+        head_migration_ordinal,
+        resolve_schema_files,
+        stamp_schema_version_head,
+    )
 
     print(f"--- Bootstrapping isolated DB: {db_name} ---")
-    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
+    tls = _env_tls_override()
+    resolved_tls = infer_tls_enabled(address, tls)
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     try:
         driver = connect_with_retries(
-            address, username, password, tls, ca_path, retries=10, sleep_s=1.0,
+            address,
+            username,
+            password,
+            resolved_tls,
+            ca_path,
+            retries=10,
+            sleep_s=1.0,
         )
         try:
             ensure_database(driver, db_name)
@@ -81,6 +107,18 @@ def _run_bootstrap(
             schema_paths = resolve_schema_files([schema_file])
             print(f"Applying schema: {schema_paths}")
             apply_schema(driver, db_name, schema_paths)
+
+            # Stamping
+            if stamp_head:
+                h_ord = head_migration_ordinal(Path(migrations_dir))
+                if h_ord > 0:
+                    stamp_schema_version_head(driver, db_name, h_ord)
+
+                    # Verify stamping worked
+                    v_ord = get_current_schema_version(driver, db_name)
+                    if v_ord < h_ord:
+                        raise RuntimeError(f"Stamping verification failed: expected {h_ord}, got {v_ord}")
+                    print(f"Verified schema_version ordinal: {v_ord}")
 
             # Apply migrations
             mig_dir = Path(migrations_dir)
@@ -101,7 +139,7 @@ def _run_bootstrap(
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="ops-min-write-probe",
-        description="TypeDB Arbiter — fail-slow write shape probe.",
+        description="TypeDB Arbiter — fail-slow write shape probe for the example tenant/capsule profile.",
     )
     p.add_argument(
         "--database-prefix",
@@ -127,6 +165,11 @@ def main() -> int:
         default=os.getenv("TYPEDB_MIGRATIONS_DIR", "migrations"),
         help="Migrations directory for bootstrap.",
     )
+    p.add_argument(
+        "--stamp-schema-version-head",
+        action="store_true",
+        help="Fast-forward schema_version to head migration ordinal after authoritative apply."
+    )
     args = p.parse_args()
 
     os.makedirs("ci_artifacts", exist_ok=True)
@@ -134,7 +177,11 @@ def main() -> int:
     import typedb
     from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
-    address = args.address if args.address else f"{args.host}:{args.port}"
+    from typedb_ops_spine.readiness import infer_tls_enabled, resolve_connection_address
+
+    address = resolve_connection_address(args.address, args.host, args.port)
+    tls = _env_tls_override()
+    resolved_tls = infer_tls_enabled(address, tls)
     use_db = f"{args.database_prefix}_{uuid.uuid4().hex[:6]}"
     driver_version = getattr(typedb, "__version__", "unknown")
 
@@ -151,15 +198,14 @@ def main() -> int:
 
     if not _run_bootstrap(
         use_db, address, args.username, args.password,
-        args.schema, args.migrations_dir,
+        args.schema, args.migrations_dir, args.stamp_schema_version_head,
     ):
         print("CRITICAL: Bootstrap failed. Aborting probe.")
         return 1
 
-    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
     creds = Credentials(args.username, args.password)
-    opts = DriverOptions(is_tls_enabled=tls, tls_root_ca_path=ca_path)
+    opts = DriverOptions(is_tls_enabled=resolved_tls, tls_root_ca_path=ca_path)
 
     failures = 0
     t_lit = _typedb_datetime_now_utc_literal("microseconds")

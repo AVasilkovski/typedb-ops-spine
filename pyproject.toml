@@ -8,7 +8,7 @@ Repository = "https://github.com/AVasilkovski/typedb-ops-spine"
 
 [project]
 name = "typedb-ops-spine"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic TypeDB 3.8 schema operations, diagnostics, and CI forensics toolkit"
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,6 +31,7 @@ ops-schema-health = "typedb_ops_spine.cli.schema_health_cli:main"
 ops-write-canary = "typedb_ops_spine.cli.write_canary_cli:main"
 ops-min-write-probe = "typedb_ops_spine.cli.min_write_probe_cli:main"
 ops-tsv-extract = "typedb_ops_spine.cli.tsv_extract_cli:main"
+ops-typedb-diag = "typedb_ops_spine.cli.typedb_diag_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

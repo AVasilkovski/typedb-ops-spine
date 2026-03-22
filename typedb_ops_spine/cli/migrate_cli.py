@@ -12,6 +12,13 @@ import sys
 from pathlib import Path
 
 
+def _env_tls_override() -> bool | None:
+    raw = os.getenv("TYPEDB_TLS")
+    if raw is None:
+        return None
+    return raw.lower() == "true"
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="ops-migrate",
@@ -59,9 +66,14 @@ def main() -> int:
     args = p.parse_args()
 
     from typedb_ops_spine.migrate import get_migrations, run_migrations
-    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
+    from typedb_ops_spine.readiness import (
+        connect_with_retries,
+        ensure_database,
+        infer_tls_enabled,
+        resolve_connection_address,
+    )
 
-    tls = os.getenv("TYPEDB_TLS", "false").lower() == "true"
+    tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     mig_dir = Path(args.migrations_dir)
@@ -92,11 +104,12 @@ def main() -> int:
         print(f"[ops-migrate] dry-run complete. Planned {len(planned)} migrations.")
         return 0
 
-    address = args.address if args.address else f"{args.host}:{args.port}"
-    print(f"[ops-migrate] Connecting to {address}")
+    address = resolve_connection_address(args.address, args.host, args.port)
+    resolved_tls = infer_tls_enabled(address, tls)
+    print(f"[ops-migrate] Connecting to {address} tls={resolved_tls}")
 
     driver = connect_with_retries(
-        address, args.username, args.password, tls, ca_path,
+        address, args.username, args.password, resolved_tls, ca_path,
     )
     try:
         if args.recreate:

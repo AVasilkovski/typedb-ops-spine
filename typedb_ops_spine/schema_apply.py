@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,235 @@ def resolve_schema_files(schema_args: list[str]) -> list[Path]:
     return deduped
 
 
+def parse_canonical_caps(
+    schema_text: str,
+) -> tuple[dict[str, str], dict[str, set[str]], dict[str, set[str]]]:
+    """Parse canonical schema text into parent/owns/plays capability maps."""
+    parent_of: dict[str, str] = {}
+    owns_of: dict[str, set[str]] = {}
+    plays_of: dict[str, set[str]] = {}
+
+    scrubbed = re.sub(r"#.*", "", schema_text, flags=re.MULTILINE)
+    block_re = re.compile(
+        r"\b(entity|relation)\b\s+([a-zA-Z0-9_-]+)"
+        r"(?:\s+\bsub\b\s+([a-zA-Z0-9_-]+))?\s*(.*?);",
+        re.S,
+    )
+    owns_re = re.compile(r"\bowns\b\s+([a-zA-Z0-9_-]+)")
+    plays_re = re.compile(r"\bplays\b\s+([a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)")
+
+    for _block_type, type_label, supertype, body in block_re.findall(scrubbed):
+        if supertype:
+            supertype = supertype.strip()
+            if supertype not in ("entity", "relation"):
+                parent_of[type_label] = supertype
+
+        owns_of.setdefault(type_label, set())
+        owns_of[type_label].update(owns_re.findall(body))
+
+        plays_of.setdefault(type_label, set())
+        plays_of[type_label].update(plays_re.findall(body))
+
+    return parent_of, owns_of, plays_of
+
+
+def compute_transitive_subtypes(parent_of: dict[str, str]) -> dict[str, set[str]]:
+    """Compute the full subtype closure for each supertype."""
+    children_of: dict[str, set[str]] = {}
+    for child, parent in parent_of.items():
+        children_of.setdefault(parent, set()).add(child)
+
+    subtypes: dict[str, set[str]] = {}
+
+    def _all_children(type_label: str) -> set[str]:
+        if type_label in subtypes:
+            return subtypes[type_label]
+
+        children = set(children_of.get(type_label, set()))
+        for child in list(children):
+            children.update(_all_children(child))
+        subtypes[type_label] = children
+        return children
+
+    for type_label in list(children_of):
+        _all_children(type_label)
+
+    return subtypes
+
+
+def plan_auto_migrations(
+    parent_of: dict[str, str],
+    owns_of: dict[str, set[str]],
+    plays_of: dict[str, set[str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Plan guarded undefines for inherited capability redeclarations."""
+    undefine_owns_specs: list[tuple[str, str]] = []
+    undefine_plays_specs: list[tuple[str, str]] = []
+    subtypes = compute_transitive_subtypes(parent_of)
+
+    for supertype, attrs in owns_of.items():
+        if supertype not in subtypes:
+            continue
+        for child in subtypes[supertype]:
+            child_attrs = owns_of.get(child, set())
+            for attr in attrs:
+                if attr in child_attrs:
+                    undefine_owns_specs.append((child, attr))
+
+    for supertype, roles in plays_of.items():
+        if supertype not in subtypes:
+            continue
+        for child in subtypes[supertype]:
+            child_roles = plays_of.get(child, set())
+            for role in roles:
+                if role in child_roles:
+                    undefine_plays_specs.append((child, role))
+
+    return undefine_owns_specs, undefine_plays_specs
+
+
+_SKIP_CODES = ("SVL35", "SVL36", "UEX20", "TSV10")
+
+
+def _is_skip(exc: Exception) -> bool:
+    msg = str(exc)
+    return any(code in msg for code in _SKIP_CODES)
+
+
+def parse_undefine_owns_spec(spec: str) -> tuple[str, str]:
+    """Parse `<entity>:<attribute>` CLI input for guarded owns undefines."""
+    parts = spec.split(":", maxsplit=1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            "Invalid --undefine-owns spec. Expected format "
+            f"'<entity>:<attribute>', got: {spec}"
+        )
+    return parts[0].strip(), parts[1].strip()
+
+
+def migrate_undefine_owns(driver: Any, db: str, specs: list[str]) -> None:
+    """Run guarded `undefine owns ... from ...;` schema migrations."""
+    from typedb.driver import TransactionType
+
+    for spec in specs:
+        entity, attribute = parse_undefine_owns_spec(spec)
+        query = f"undefine owns {attribute} from {entity};"
+        try:
+            with driver.transaction(db, TransactionType.SCHEMA) as tx:
+                tx.query(query).resolve()
+                tx.commit()
+            _emit_diag({
+                "db": db,
+                "tx_type": "SCHEMA",
+                **_query_meta(query),
+                "stage": "undefine_owns",
+                "status": "success",
+                "error_class": None,
+                "error_message": None,
+                "answer_kind": "ok",
+                "row_count": 0,
+                "doc_count": 0,
+            })
+            logger.info("Guarded schema scrub applied: %s", query)
+        except Exception as exc:
+            if _is_skip(exc):
+                _emit_diag({
+                    "db": db,
+                    "tx_type": "SCHEMA",
+                    **_query_meta(query),
+                    "stage": "undefine_owns",
+                    "status": "skip",
+                    "error_class": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "answer_kind": "skip",
+                    "row_count": 0,
+                    "doc_count": 0,
+                })
+                logger.info("Guarded schema scrub skipped for %s: %s", query, exc)
+                continue
+
+            _emit_diag({
+                "db": db,
+                "tx_type": "SCHEMA",
+                **_query_meta(query),
+                "stage": "undefine_owns",
+                "status": "fail",
+                "error_class": exc.__class__.__name__,
+                "error_message": str(exc),
+                "answer_kind": None,
+                "row_count": 0,
+                "doc_count": 0,
+            })
+            raise
+
+
+def parse_undefine_plays_spec(spec: str) -> tuple[str, str]:
+    """Parse `<type>:<relation:role>` CLI input for guarded plays undefines."""
+    parts = spec.split(":", maxsplit=1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            "Invalid --undefine-plays spec. Expected format "
+            f"'<type>:<relation:role>', got: {spec}"
+        )
+    return parts[0].strip(), parts[1].strip()
+
+
+def migrate_undefine_plays(driver: Any, db: str, specs: list[str]) -> None:
+    """Run guarded `undefine plays ... from ...;` schema migrations."""
+    from typedb.driver import TransactionType
+
+    for spec in specs:
+        type_label, scoped_role = parse_undefine_plays_spec(spec)
+        query = f"undefine plays {scoped_role} from {type_label};"
+        try:
+            with driver.transaction(db, TransactionType.SCHEMA) as tx:
+                tx.query(query).resolve()
+                tx.commit()
+            _emit_diag({
+                "db": db,
+                "tx_type": "SCHEMA",
+                **_query_meta(query),
+                "stage": "undefine_plays",
+                "status": "success",
+                "error_class": None,
+                "error_message": None,
+                "answer_kind": "ok",
+                "row_count": 0,
+                "doc_count": 0,
+            })
+            logger.info("Guarded schema scrub applied: %s", query)
+        except Exception as exc:
+            if _is_skip(exc):
+                _emit_diag({
+                    "db": db,
+                    "tx_type": "SCHEMA",
+                    **_query_meta(query),
+                    "stage": "undefine_plays",
+                    "status": "skip",
+                    "error_class": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "answer_kind": "skip",
+                    "row_count": 0,
+                    "doc_count": 0,
+                })
+                logger.info("Guarded schema scrub skipped for %s: %s", query, exc)
+                continue
+
+            _emit_diag({
+                "db": db,
+                "tx_type": "SCHEMA",
+                **_query_meta(query),
+                "stage": "undefine_plays",
+                "status": "fail",
+                "error_class": exc.__class__.__name__,
+                "error_message": str(exc),
+                "answer_kind": None,
+                "row_count": 0,
+                "doc_count": 0,
+            })
+            raise
+
+
 def apply_schema(
     driver: Any,
     db: str,
@@ -170,3 +400,95 @@ def apply_schema(
                 "doc_count": 0,
             })
             raise
+
+
+def get_current_schema_version(driver: Any, db: str) -> int:
+    """Read current schema version ordinal with safe materialization."""
+    from typedb.driver import TransactionType
+
+    query = "match $v isa schema_version, has ordinal $o; select $o;"
+    try:
+        with driver.transaction(db, TransactionType.READ) as tx:
+            ans = tx.query(query).resolve()
+            rows = list(ans.as_concept_rows())
+            ordinals = []
+            for r in rows:
+                o_attr = r.get("o")
+                if o_attr and o_attr.is_attribute():
+                    ordinals.append(int(o_attr.as_attribute().get_value()))
+            return max(ordinals) if ordinals else 0
+    except Exception:
+        return 0
+
+
+def head_migration_ordinal(migrations_dir: Path) -> int:
+    """Parse NNN_*.tql ordinals and return max."""
+    if not migrations_dir.is_dir():
+        return 0
+    files = list(migrations_dir.glob("*.tql"))
+    ordinals = []
+    for f in files:
+        name = f.name
+        parts = name.split("_")
+        if parts and parts[0].isdigit():
+            ordinals.append(int(parts[0]))
+    return max(ordinals) if ordinals else 0
+
+
+def stamp_schema_version_head(driver: Any, db: str, head_ordinal: int) -> None:
+    """
+    INSERT a new schema_version row to fast-forward an authoritative schema install.
+    Guards: No-op if head <= 0 or current >= head.
+    """
+    from typedb.driver import TransactionType
+
+    if head_ordinal <= 0:
+        return
+
+    current = get_current_schema_version(driver, db)
+    if current >= head_ordinal:
+        logger.info("[ops-apply-schema] skip stamping: current_ordinal=%d head_ordinal=%d", current, head_ordinal)
+        return
+
+    git_commit = os.getenv("GITHUB_SHA", "unknown")
+    applied_at = (
+        datetime.now(timezone.utc)
+        .replace(tzinfo=None)
+        .isoformat(timespec="microseconds")
+    )
+
+    query = f"""
+    insert $v isa schema_version,
+      has ordinal {head_ordinal},
+      has git-commit "{git_commit}",
+      has applied-at {applied_at};
+    """
+
+    logger.info("[ops-apply-schema] stamping schema_version: %d -> %d (authoritative schema applied)", current, head_ordinal)
+
+    try:
+        with driver.transaction(db, TransactionType.WRITE) as tx:
+            ans = tx.query(query).resolve()
+
+            # Safe materialization barrier (Rows -> Docs -> OK)
+            if ans.is_concept_rows():
+                list(ans.as_concept_rows())
+            elif ans.is_concept_documents():
+                list(ans.as_concept_documents())
+            elif ans.is_ok():
+                ans.as_ok()
+
+            tx.commit()
+
+            _emit_diag({
+                "db": db, "tx_type": "WRITE", **_query_meta(query),
+                "stage": "stamp_schema_version", "status": "success",
+                "answer_kind": "ok", "head_ordinal": head_ordinal
+            })
+    except Exception as e:
+        _emit_diag({
+            "db": db, "tx_type": "WRITE", **_query_meta(query),
+            "stage": "stamp_schema_version", "status": "fail",
+            "error_class": e.__class__.__name__, "error_message": str(e)
+        })
+        raise RuntimeError(f"Failed to stamp schema_version to head ordinal {head_ordinal}: {e}")
