@@ -100,10 +100,10 @@ def main() -> int:
 
     from typedb_ops_spine.migrate import run_migrations
     from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
         connect_with_retries,
         ensure_database,
-        infer_tls_enabled,
-        resolve_connection_address,
+        resolve_connection_config,
     )
     from typedb_ops_spine.schema_apply import (
         apply_schema,
@@ -114,10 +114,19 @@ def main() -> int:
     )
 
     db_name = args.database
-    address = resolve_connection_address(args.address, args.host, args.port)
     tls = _env_tls_override()
-    resolved_tls = infer_tls_enabled(address, tls)
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"  [ERROR] Invalid TypeDB config: {e}", file=sys.stderr)
+        return 1
 
     try:
         driver_version = md.version("typedb-driver")

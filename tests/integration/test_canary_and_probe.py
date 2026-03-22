@@ -15,6 +15,13 @@ from pathlib import Path
 from tests.conftest import requires_typedb
 
 
+def _env_tls_override() -> bool | None:
+    raw = os.getenv("TYPEDB_TLS")
+    if raw is None:
+        return None
+    return raw.lower() == "true"
+
+
 def _bootstrap_scoped_canary_db(db_name: str, tenant_id: str) -> None:
     from typedb.driver import TransactionType
 
@@ -27,9 +34,14 @@ def _bootstrap_scoped_canary_db(db_name: str, tenant_id: str) -> None:
     address = os.getenv("TYPEDB_ADDRESS", "localhost:1729")
     username = os.getenv("TYPEDB_USERNAME", "admin")
     password = os.getenv("TYPEDB_PASSWORD", "password")
+    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     driver = connect_with_retries(
-        address, username, password,
+        address,
+        username,
+        password,
+        tls=_env_tls_override(),
+        ca_path=ca_path,
         retries=10, sleep_s=1.0,
     )
     try:

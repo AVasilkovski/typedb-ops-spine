@@ -61,13 +61,25 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from typedb_ops_spine.readiness import infer_tls_enabled, resolve_connection_address
+    from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
+        resolve_connection_config,
+    )
     from typedb_ops_spine.typedb_diag import run_smoke_diagnostics
 
     tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
-    address = resolve_connection_address(args.address, args.host, args.port)
-    resolved_tls = infer_tls_enabled(address, tls)
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"[ops-typedb-diag] ERROR: {e}", file=sys.stderr)
+        return 1
 
     print(f"[ops-typedb-diag] Connecting to {address} tls={resolved_tls}")
     if args.smoke_query:

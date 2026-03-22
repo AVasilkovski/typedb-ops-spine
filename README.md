@@ -1,253 +1,126 @@
 # typedb-ops-spine
 
-**Deterministic TypeDB 3.8 schema operations, smoke diagnostics, and CI forensics toolkit.**
+Deterministic TypeDB 3.8 schema operations, smoke diagnostics, and CI forensics.
 
 [![CI](https://github.com/AVasilkovski/typedb-ops-spine/actions/workflows/ci.yml/badge.svg)](https://github.com/AVasilkovski/typedb-ops-spine/actions)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
----
+## Release status
 
-## What is this?
+There is **no PyPI release yet**.
 
-`typedb-ops-spine` packages the operational tooling needed to run TypeDB 3.8 deterministically in CI and production:
+The supported install paths today are:
 
-| Capability | Tool |
-|---|---|
-| **Schema apply** | `ops-apply-schema` — deterministic schema application with glob-killer path resolution |
-| **Schema scrub** | `ops-apply-schema --auto-migrate-redeclarations` — guarded `undefine owns/plays` planning for inherited redeclarations |
-| **Migrations** | `ops-migrate` — ordinal-based, gap-detecting, hash-logged migrations |
-| **Health check** | `ops-schema-health` — drift detection (repo ordinals vs DB state) |
-| **Smoke diagnostics** | `ops-typedb-diag` — connectivity, DB-presence, and optional smoke-query verification |
-| **Readiness** | `connect_with_retries()` — real round-trip verification (`databases.all()`) |
-| **Safe execution** | `execute()` — answer-kind barrier with Rows → Docs → OK ordering |
-| **Diagnostics** | `emit_typedb_diag()` — keyword-only JSONL emission + TSV extractor |
-| **Canary** | `ops-write-canary` — write→commit→read durability check for the packaged tenant-based profile |
-| **Probe** | `ops-min-write-probe` — 5-variant write-shape arbiter for the packaged tenant/run-capsule profile |
+- local checkout install for standalone/operator use
+- pinned VCS install for consuming repos and CI
 
----
+Do not rely on `pip install typedb-ops-spine` until a real package release exists.
 
-## Quickstart
+## Standalone quickstart
+
+This is the copy-paste path that works today from a fresh checkout:
 
 ```bash
-pip install typedb-ops-spine
+git clone https://github.com/AVasilkovski/typedb-ops-spine.git
+cd typedb-ops-spine
+python -m pip install .
 
-# Apply schema
-ops-apply-schema --schema schema.tql --database my_db
-
-# Existing databases with inherited redeclarations:
+# Apply the bundled example schema
 ops-apply-schema \
-  --schema schema.tql \
-  --database my_db \
+  --schema examples/minimal_project/schema.tql \
+  --database ops_spine_demo \
   --auto-migrate-redeclarations
 
-# Run migrations
-ops-migrate --migrations-dir migrations --database my_db
+# Stamp to the bundled migration head
+ops-apply-schema \
+  --schema examples/minimal_project/schema.tql \
+  --database ops_spine_demo \
+  --migrations-dir examples/minimal_project/migrations \
+  --stamp-schema-version-head
 
-# Check for schema drift
-ops-schema-health --migrations-dir migrations --database my_db
+# Verify parity and smoke-read schema_version
+ops-schema-health \
+  --migrations-dir examples/minimal_project/migrations \
+  --database ops_spine_demo
 
-# Smoke diagnostics (DB presence only)
-ops-typedb-diag --database my_db --require-db
-
-# Write/read durability canary
-# Targets the packaged tenant profile by default
-ops-write-canary --database my_db
-
-# Tenant-scoped canary (SuperHyperion-profile)
-# Requires schema with 'tenant' and 'run-capsule' types
-ops-write-canary --database my_db --tenant-id "tenant-1" --ownership-rel auto
-
-# Smoke diagnostics with an explicit rows query
 ops-typedb-diag \
-  --database my_db \
+  --database ops_spine_demo \
   --require-db \
   --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
-
-# Extract CI diagnostics as TSV
-ops-tsv-extract
 ```
 
-### Cloud / TLS
+Defaults assume local TypeDB Core on `localhost:1729` with admin/password.
 
-`typedb-ops-spine` accepts local Core addresses (`localhost:1729`) and normalizes
-Cloud-style addresses (`https://cloud.typedb.com` → `https://cloud.typedb.com:443`
-when paired with `TYPEDB_PORT=443`). TLS is inferred from `https://...` addresses
-unless `TYPEDB_TLS` explicitly overrides it.
+## Install from another repo or CI
+
+For external projects, pin an immutable commit or tag:
 
 ```bash
-export TYPEDB_ADDRESS="https://cloud.typedb.com"
-export TYPEDB_PORT="443"
-export TYPEDB_USERNAME="admin"
-export TYPEDB_PASSWORD="password"
-export TYPEDB_ROOT_CA_PATH="/path/to/ca.pem"
-
-ops-typedb-diag --database my_db --require-db
+python -m pip install \
+  "typedb-ops-spine @ git+https://github.com/AVasilkovski/typedb-ops-spine.git@<pinned-commit-or-tag>"
 ```
 
-### As a library
+The bundled example CI snippet in
+[examples/minimal_project/ci_example.yml](examples/minimal_project/ci_example.yml)
+uses that install shape and the library's protocol-level readiness check.
+
+## Core tools
+
+- `ops-apply-schema`: deterministic schema apply, optional guarded scrub, optional head stamping
+- `ops-migrate`: ordinal-based schema migrations with gap detection
+- `ops-schema-health`: repo ordinal vs database ordinal parity check
+- `ops-typedb-diag`: connectivity, database presence, and optional smoke query verification
+- `ops-tsv-extract`: TSV extraction for emitted diagnostics
+
+The package also ships `ops-write-canary` and `ops-min-write-probe`. Those are bundled example-profile diagnostics for the tenant/run-capsule schema under `examples/minimal_project`; they are not the primary onboarding path for generic users.
+
+## Connection settings
+
+Supported address forms:
+
+- `localhost:1729`
+- `localhost`
+- `https://cloud.example.com:443`
+- `https://cloud.example.com` together with `TYPEDB_PORT=443`
+
+Validation is fail-fast:
+
+- `TYPEDB_TLS=true` with a non-HTTPS address is rejected immediately
+- `TYPEDB_TLS=false` with an HTTPS address is rejected immediately
+- unsupported schemes such as `http://...` are rejected immediately
+- `TYPEDB_ROOT_CA_PATH` is only valid with HTTPS/TLS connections
+
+This avoids wasting the full retry budget on deterministic configuration errors.
+
+## Library usage
 
 ```python
 from typedb.driver import TransactionType
 from typedb_ops_spine import connect_with_retries, execute, QueryMode
 
 driver = connect_with_retries("localhost:1729", "admin", "password")
-with driver.transaction("my_db", TransactionType.READ) as tx:
-    rows = execute(tx, "match $t isa tenant; select $t;", QueryMode.READ_ROWS,
-                   component="my_app", db_name="my_db")
+with driver.transaction("ops_spine_demo", TransactionType.READ) as tx:
+    rows = execute(
+        tx,
+        "match $v isa schema_version, has ordinal $o; select $o;",
+        QueryMode.READ_ROWS,
+        component="demo",
+        db_name="ops_spine_demo",
+    )
 ```
-
----
-
-## Locked Invariants
-
-### EPI-16.9: Materialization Barrier (Rows → Docs → OK)
-
-In TypeDB 3.8, calling `as_ok()` on an answer that actually contains concept rows
-throws `Invalid query answer conversion from '_ConceptRowIterator' to 'OkQueryAnswer'`.
-
-**The `execute()` function enforces this barrier:**
-
-1. **Check `is_concept_rows()` first** — if truthy, exhaust rows via `as_concept_rows()`.
-2. **Then check `is_concept_documents()`** — if truthy, exhaust docs.
-3. **Only then check `is_ok()`** — and only if no rows/docs were materialized.
-4. **Fallback** tries rows → docs → `is_ok()` guard → `as_ok()`.
-5. **No silent swallowing** — every failure path emits diagnostics.
-
-```
-LOCKED: Never call as_ok() when rows/docs exist or can be exhausted.
-```
-
-### Diagnostics Contract
-
-All diagnostic emission uses **keyword-only** parameters:
-
-```python
-emit_typedb_diag(
-    *,
-    component: str,    # e.g. "my_app", "ops_write_canary"
-    db_name: str,      # database name
-    tx_type: str,      # "READ", "WRITE", "SCHEMA"
-    action: str,       # "execute", "barrier_failure", "commit", etc.
-    query: str,        # the TypeQL query
-    answer_kind: str,  # "rows", "docs", "ok", "exception"
-    row_count: int,    # materialized row count
-    doc_count: int,    # materialized doc count
-    error_code: str,
-    error_message: str,
-    **extra,           # forward-compatible extension fields
-)
-```
-
-Output: `ci_artifacts/typedb_diag.jsonl` (configurable via `OPS_DIAG_PATH` or `CI_ARTIFACTS_DIR`).
-
----
-
-## Failure Mode Taxonomy
-
-| Failure Mode | Symptom | Root Cause | Fix |
-|---|---|---|---|
-| **Ghost writes** | Insert appears to succeed but data not queryable | `as_ok()` called on rows iterator | Enforce Rows→Docs→OK barrier |
-| **Seed invisibility** | CI reads return 0 rows after seed | No materialization before commit | Exhaust iterator before `tx.commit()` |
-| **Invalid cast exception** | `_ConceptRowIterator → OkQueryAnswer` | Calling `as_ok()` on a rows answer | Check `is_concept_rows()` first |
-| **Schema drift** | Tests pass locally, fail in CI | Migration ordinals out of sync | Run `ops-schema-health` in CI |
-| **Flaky readiness** | Connection refused in CI | TypeDB not ready when tests start | Use `connect_with_retries()` |
-
----
-
-## Answer-Kind Safe Execution Guidance
-
-| QueryMode | Expected Answer | Barrier Behavior |
-|---|---|---|
-| `READ_ROWS` | Concept rows | Materializes rows, raises if not rows |
-| `READ_DOCS` | Concept docs | Materializes docs, raises if not docs |
-| `WRITE` | Any (permissive) | Tries rows→docs→ok, returns whatever materializes |
-| `WRITE_ROWS` | Concept rows | Strict: raises if not rows |
-| `WRITE_DOCS` | Concept docs | Strict: raises if not docs |
-| `WRITE_OK` | OK preferred | Accepts rows/docs, barriers correctly |
-| `SCHEMA_OK` | OK | Schema tx, barriers correctly |
-
----
-
-## CI Integration
-
-See [`examples/minimal_project/ci_example.yml`](examples/minimal_project/ci_example.yml) for a
-complete GitHub Actions snippet. Key pattern:
-
-```yaml
-services:
-  typedb:
-    image: typedb/typedb:3.8.0
-    ports: ["1729:1729"]
-
-steps:
-  - run: ops-apply-schema --schema schema.tql --auto-migrate-redeclarations --scrub-only
-  - run: ops-apply-schema --schema schema.tql --migrations-dir migrations --stamp-schema-version-head
-  - run: ops-migrate --migrations-dir migrations
-  - run: ops-schema-health --migrations-dir migrations
-  - run: >
-      ops-typedb-diag --require-db
-      --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
-  - if: always()
-    run: |
-      set +e
-      ops-write-canary; echo "CANARY=$?" >> $GITHUB_ENV
-      ops-min-write-probe --schema schema.tql --migrations-dir migrations
-      echo "PROBE=$?" >> $GITHUB_ENV
-  - if: always()
-    run: ops-tsv-extract
-```
-
----
-
-## Release Plan
-
-### v0.2.0 (current)
-
-- Core ops: schema apply, migrate, health check, readiness
-- Guarded schema scrubber for inherited owns/plays redeclarations
-- Smoke diagnostics CLI for connectivity, DB presence, and optional smoke-query checks
-- Cloud/TLS address normalization and HTTPS-based TLS inference
-- Execution barrier with Rows→Docs→OK invariant
-- Diagnostics JSONL + TSV extractor
-- Canary + Arbiter probe (5 variants)
-- CI workflow pinned to TypeDB 3.8.0 plus 3.8.1 compat
-
-### v0.3.0 (planned)
-
-- Stronger content-level drift / schema fingerprint parity
-- Better crash-recovery semantics around authoritative apply + migration bookkeeping
-- Broader cloud/TLS integration coverage
-
-### How SuperHyperion can later adopt ops-spine
-
-1. Add `typedb-ops-spine>=0.2.0` to SuperHyperion's `requirements.txt`
-2. Replace `from src.db.typedb_exec import execute` with `from typedb_ops_spine import execute`
-3. Replace `from src.db.typedb_diagnostics import emit_typedb_diag` with `from typedb_ops_spine import emit_typedb_diag`
-4. Remove duplicated `scripts/apply_schema.py`, `scripts/migrate.py`, etc.
-5. Update CI to use `ops-apply-schema`, `ops-migrate`, `ops-schema-health`, and `ops-typedb-diag`
-
-This is a **non-breaking, additive** migration — SuperHyperion can adopt incrementally.
-
----
 
 ## Development
 
 ```bash
 git clone https://github.com/AVasilkovski/typedb-ops-spine.git
 cd typedb-ops-spine
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 
-# Unit tests (no TypeDB needed)
-pytest tests/unit/ -v
-
-# Lint
-ruff check typedb_ops_spine/ tests/
-
-# Integration tests (need TypeDB running on localhost:1729)
-TYPEDB_ADDRESS=localhost:1729 pytest tests/integration/ -v
+pytest tests/unit/ -q
+pytest tests/integration/ -q
 ```
 
-## License
+Integration tests use the same protocol-level readiness path as operators. If TypeDB is not query-ready with the configured address, auth, and TLS settings, they skip.
 
-MIT — see [LICENSE](LICENSE).
+## SuperHyperion adoption note
+
+If another repo wants to consume `typedb-ops-spine` before a package release exists, use a pinned VCS dependency instead of `typedb-ops-spine>=...`.

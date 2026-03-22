@@ -66,6 +66,8 @@ def _run_bootstrap(
     password: str,
     schema_file: str,
     migrations_dir: str,
+    tls: bool | None = None,
+    ca_path: str | None = None,
     stamp_head: bool = False,
 ) -> bool:
     """Bootstrap an isolated database using library functions (no subprocess)."""
@@ -75,7 +77,6 @@ def _run_bootstrap(
     from typedb_ops_spine.readiness import (
         connect_with_retries,
         ensure_database,
-        infer_tls_enabled,
     )
     from typedb_ops_spine.schema_apply import (
         apply_schema,
@@ -86,17 +87,14 @@ def _run_bootstrap(
     )
 
     print(f"--- Bootstrapping isolated DB: {db_name} ---")
-    tls = _env_tls_override()
-    resolved_tls = infer_tls_enabled(address, tls)
-    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     try:
         driver = connect_with_retries(
             address,
             username,
             password,
-            resolved_tls,
-            ca_path,
+            tls=tls,
+            ca_path=ca_path,
             retries=10,
             sleep_s=1.0,
         )
@@ -177,11 +175,24 @@ def main() -> int:
     import typedb
     from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
-    from typedb_ops_spine.readiness import infer_tls_enabled, resolve_connection_address
+    from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
+        resolve_connection_config,
+    )
 
-    address = resolve_connection_address(args.address, args.host, args.port)
     tls = _env_tls_override()
-    resolved_tls = infer_tls_enabled(address, tls)
+    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"Probe FATAL: {e}", file=sys.stderr)
+        return 1
     use_db = f"{args.database_prefix}_{uuid.uuid4().hex[:6]}"
     driver_version = getattr(typedb, "__version__", "unknown")
 
@@ -198,12 +209,15 @@ def main() -> int:
 
     if not _run_bootstrap(
         use_db, address, args.username, args.password,
-        args.schema, args.migrations_dir, args.stamp_schema_version_head,
+        args.schema,
+        args.migrations_dir,
+        tls=resolved_tls,
+        ca_path=ca_path,
+        stamp_head=args.stamp_schema_version_head,
     ):
         print("CRITICAL: Bootstrap failed. Aborting probe.")
         return 1
 
-    ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
     creds = Credentials(args.username, args.password)
     opts = DriverOptions(is_tls_enabled=resolved_tls, tls_root_ca_path=ca_path)
 

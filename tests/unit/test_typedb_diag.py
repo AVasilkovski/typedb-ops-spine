@@ -5,6 +5,9 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
+from typedb_ops_spine.readiness import TypeDBConfigError
 from typedb_ops_spine.typedb_diag import run_smoke_diagnostics
 
 
@@ -139,3 +142,40 @@ def test_run_smoke_diagnostics_fails_when_required_db_missing(monkeypatch, tmp_p
 
     assert rc == 1
     assert driver.closed is True
+
+
+def test_run_smoke_diagnostics_fails_fast_on_invalid_config(monkeypatch):
+    class _Credentials:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class _DriverOptions:
+        def __init__(self, **_kwargs):
+            pass
+
+    class _TransactionType:
+        READ = "READ"
+
+    class _TypeDB:
+        @staticmethod
+        def driver(*_args, **_kwargs):
+            raise AssertionError("driver() should not be called for config errors")
+
+    fake_mod = types.SimpleNamespace(
+        Credentials=_Credentials,
+        DriverOptions=_DriverOptions,
+        TransactionType=_TransactionType,
+        TypeDB=_TypeDB,
+    )
+    monkeypatch.setitem(sys.modules, "typedb.driver", fake_mod)
+
+    with pytest.raises(TypeDBConfigError, match="TLS is enabled but the resolved TypeDB address is not HTTPS"):
+        run_smoke_diagnostics(
+            "localhost:1729",
+            "ops_db",
+            "admin",
+            "password",
+            tls=True,
+            retries=3,
+            sleep_s=0,
+        )

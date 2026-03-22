@@ -12,7 +12,7 @@ import logging
 import time
 
 from typedb_ops_spine.diagnostics import emit_typedb_diag
-from typedb_ops_spine.readiness import infer_tls_enabled, normalize_typedb_address
+from typedb_ops_spine.readiness import validate_connection_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +53,19 @@ def run_smoke_diagnostics(
     sleep_s: float = 2.0,
 ) -> int:
     """Run connectivity/database/smoke-query diagnostics against TypeDB."""
-    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
-
-    resolved_address = normalize_typedb_address(address)
-    resolved_tls = infer_tls_enabled(resolved_address, tls)
+    resolved_address, resolved_tls, resolved_ca_path = validate_connection_config(
+        address,
+        tls=tls,
+        ca_path=ca_path,
+    )
     query = (smoke_query or "").strip()
+
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     creds = Credentials(username, password)
     opts = DriverOptions(
         is_tls_enabled=resolved_tls,
-        tls_root_ca_path=ca_path,
+        tls_root_ca_path=resolved_ca_path,
     )
 
     last_err: Exception | None = None
