@@ -178,7 +178,7 @@ def main() -> int:
 
             if is_scoped:
                 # 1. Verify exact tenant exists
-                tenant_q = f'match $t isa tenant, has tenant-id "{tenant_val}"; get $t;'
+                tenant_q = f'match $t isa tenant, has tenant-id "{tenant_val}"; select $t;'
                 with driver.transaction(db_name, TransactionType.READ) as rtx:
                     print(f"Verifying target tenant {tenant_val} exists...")
                     t_ans = execute(

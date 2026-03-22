@@ -70,6 +70,9 @@ def test_write_canary_cli_default_path_uses_execute_signature_without_extra_kwar
         assert db_name == "canary-db"
         assert address == "localhost:1729"
         assert stage
+        if stage == "verify_tenant_exists":
+            assert "select $t;" in query
+            assert " get $t;" not in query
         calls.append((mode, stage))
         if mode == QueryMode.READ_ROWS:
             return [object()]
