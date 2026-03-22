@@ -93,10 +93,10 @@ def main() -> int:
     args = p.parse_args()
 
     from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
         connect_with_retries,
         ensure_database,
-        infer_tls_enabled,
-        resolve_connection_address,
+        resolve_connection_config,
     )
     from typedb_ops_spine.schema_apply import (
         apply_schema,
@@ -160,16 +160,25 @@ def main() -> int:
             print("[ops-apply-schema] dry-run: canonical schema apply would run")
         return 0
 
-    address = resolve_connection_address(args.address, args.host, args.port)
-    resolved_tls = infer_tls_enabled(address, tls)
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"[ops-apply-schema] ERROR: {e}", file=sys.stderr)
+        return 1
     print(f"[ops-apply-schema] Connecting to {address} tls={resolved_tls}")
 
     driver = connect_with_retries(
         address,
         args.username,
         args.password,
-        resolved_tls,
-        ca_path,
+        tls=resolved_tls,
+        ca_path=ca_path,
     )
     try:
         if args.recreate:

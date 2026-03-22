@@ -67,10 +67,10 @@ def main() -> int:
 
     from typedb_ops_spine.migrate import get_migrations, run_migrations
     from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
         connect_with_retries,
         ensure_database,
-        infer_tls_enabled,
-        resolve_connection_address,
+        resolve_connection_config,
     )
 
     tls = _env_tls_override()
@@ -104,12 +104,25 @@ def main() -> int:
         print(f"[ops-migrate] dry-run complete. Planned {len(planned)} migrations.")
         return 0
 
-    address = resolve_connection_address(args.address, args.host, args.port)
-    resolved_tls = infer_tls_enabled(address, tls)
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"[ops-migrate] ERROR: {e}", file=sys.stderr)
+        return 1
     print(f"[ops-migrate] Connecting to {address} tls={resolved_tls}")
 
     driver = connect_with_retries(
-        address, args.username, args.password, resolved_tls, ca_path,
+        address,
+        args.username,
+        args.password,
+        tls=resolved_tls,
+        ca_path=ca_path,
     )
     try:
         if args.recreate:

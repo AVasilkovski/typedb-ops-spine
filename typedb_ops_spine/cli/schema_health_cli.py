@@ -44,25 +44,34 @@ def main() -> int:
     args = p.parse_args()
 
     from typedb_ops_spine.readiness import (
+        TypeDBConfigError,
         connect_with_retries,
-        infer_tls_enabled,
-        resolve_connection_address,
+        resolve_connection_config,
     )
     from typedb_ops_spine.schema_health import check_health
 
     tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
-    address = resolve_connection_address(args.address, args.host, args.port)
-    resolved_tls = infer_tls_enabled(address, tls)
-
-    if not address or address == ":":
-        print("[ops-schema-health] SKIP: missing address")
-        return 0
+    try:
+        address, resolved_tls, ca_path = resolve_connection_config(
+            args.address,
+            args.host,
+            args.port,
+            tls=tls,
+            ca_path=ca_path,
+        )
+    except TypeDBConfigError as e:
+        print(f"[ops-schema-health] ERROR: {e}", file=sys.stderr)
+        return 1
 
     print(f"[ops-schema-health] Connecting to {address} tls={resolved_tls}")
     driver = connect_with_retries(
-        address, args.username, args.password, resolved_tls, ca_path,
+        address,
+        args.username,
+        args.password,
+        tls=resolved_tls,
+        ca_path=ca_path,
     )
     try:
         healthy, repo_ord, db_ord = check_health(

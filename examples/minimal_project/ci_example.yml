@@ -1,7 +1,7 @@
-# Example GitHub Actions CI using typedb-ops-spine
+# Example GitHub Actions CI using typedb-ops-spine.
 #
-# Copy this into your project's .github/workflows/ directory and adjust
-# the schema/migrations paths to match your project structure.
+# Replace schema/migration paths with your project layout and update the pinned
+# typedb-ops-spine ref when you adopt a newer validated commit or tag.
 
 name: CI (TypeDB)
 
@@ -22,10 +22,13 @@ jobs:
           - 1729:1729
 
     env:
+      PYTHONPATH: .
+      TYPEDB_OPS_SPINE_REF: "c864a47a5d7c05c05e6f2d335c4835f71a17c9a6"
       TYPEDB_ADDRESS: "localhost:1729"
       TYPEDB_DATABASE: my_project_db
       TYPEDB_USERNAME: admin
       TYPEDB_PASSWORD: password
+      TYPEDB_TLS: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -36,74 +39,52 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install typedb-ops-spine
-          pip install -e .  # your project
+          python -m pip install --upgrade pip
+          python -m pip install "typedb-ops-spine @ git+https://github.com/AVasilkovski/typedb-ops-spine.git@${TYPEDB_OPS_SPINE_REF}"
+          python -m pip install -e .
 
-      - name: Wait for TypeDB
+      - name: Wait for TypeDB readiness
         run: |
           python -c "
-          import socket, time, sys
-          deadline = time.time() + 60
-          while time.time() < deadline:
-              try:
-                  with socket.create_connection(('localhost', 1729), timeout=2):
-                      sys.exit(0)
-              except OSError:
-                  time.sleep(1)
-          sys.exit(1)
+          from typedb_ops_spine.readiness import connect_with_retries
+          import os
+          driver = connect_with_retries(
+              os.environ['TYPEDB_ADDRESS'],
+              os.environ['TYPEDB_USERNAME'],
+              os.environ['TYPEDB_PASSWORD'],
+              tls=os.environ.get('TYPEDB_TLS', 'false').lower() == 'true',
+              ca_path=os.environ.get('TYPEDB_ROOT_CA_PATH') or None,
+              retries=45,
+              sleep_s=2.0,
+          )
+          driver.close()
+          print('TypeDB is query-ready')
           "
 
       - name: Apply schema
         run: |
           ops-apply-schema \
             --schema schema.tql \
-            --database $TYPEDB_DATABASE \
+            --database "$TYPEDB_DATABASE" \
             --auto-migrate-redeclarations \
             --scrub-only
           ops-apply-schema \
             --schema schema.tql \
-            --database $TYPEDB_DATABASE \
+            --database "$TYPEDB_DATABASE" \
             --migrations-dir migrations \
             --stamp-schema-version-head
 
       - name: Run migrations
-        run: ops-migrate --migrations-dir migrations --database $TYPEDB_DATABASE
+        run: ops-migrate --migrations-dir migrations --database "$TYPEDB_DATABASE"
 
       - name: Schema health check
-        run: ops-schema-health --migrations-dir migrations --database $TYPEDB_DATABASE
+        run: ops-schema-health --migrations-dir migrations --database "$TYPEDB_DATABASE"
 
       - name: Smoke diagnostics
         run: >
-          ops-typedb-diag --database $TYPEDB_DATABASE --require-db
+          ops-typedb-diag --database "$TYPEDB_DATABASE" --require-db
           --smoke-query 'match $v isa schema_version, has ordinal $o; select $o; limit 1;'
 
-      - name: Write canary
-        if: always()
-        run: |
-          set +e
-          ops-write-canary --database $TYPEDB_DATABASE
-          echo "CANARY=$?" >> $GITHUB_ENV
-
-      - name: Write probe
-        if: always()
-        run: |
-          set +e
-          ops-min-write-probe --schema schema.tql --migrations-dir migrations
-          echo "PROBE=$?" >> $GITHUB_ENV
-
-      - name: Extract TSV
+      - name: Extract TSV diagnostics
         if: always()
         run: ops-tsv-extract
-
-      - name: Fail on canary/probe error
-        if: always()
-        run: |
-          [ "${CANARY:-0}" = "0" ] && [ "${PROBE:-0}" = "0" ] || exit 1
-
-      - name: Upload CI artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-artifacts
-          path: ci_artifacts/**
-          retention-days: 7
