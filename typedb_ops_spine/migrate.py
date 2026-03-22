@@ -162,6 +162,25 @@ def get_migrations(
     return valid_files
 
 
+def _materialize_write_answer(ans: Any) -> None:
+    """Force TypeDB write answers through the Rows -> Docs -> OK barrier.
+
+    This makes the schema_version recording write explicit before commit, but it
+    does not make migrations atomic: schema application and version stamping
+    still happen in separate transactions.
+    """
+    if hasattr(ans, "is_concept_rows") and ans.is_concept_rows():
+        list(ans.as_concept_rows())
+        return
+
+    if hasattr(ans, "is_concept_documents") and ans.is_concept_documents():
+        list(ans.as_concept_documents())
+        return
+
+    if hasattr(ans, "is_ok") and ans.is_ok() and hasattr(ans, "as_ok"):
+        ans.as_ok()
+
+
 def apply_migration(
     driver: Any,
     db: str,
@@ -173,6 +192,9 @@ def apply_migration(
     """Apply a single migration file: SCHEMA transaction + version record.
 
     Migration files must start with define/undefine/redefine.
+    The schema change and schema_version insert are intentionally separate
+    transactions, so crash recovery still requires reconciliation if the
+    process dies between them.
 
     Args:
         driver: Connected TypeDB driver.
@@ -255,7 +277,8 @@ def apply_migration(
 
     try:
         with driver.transaction(db, TransactionType.WRITE) as tx:
-            tx.query(version_query).resolve()
+            ans = tx.query(version_query).resolve()
+            _materialize_write_answer(ans)
             tx.commit()
             _emit_diag({
                 "db": db,
