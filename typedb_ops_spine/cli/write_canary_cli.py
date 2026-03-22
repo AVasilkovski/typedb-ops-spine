@@ -184,7 +184,6 @@ def main() -> int:
                     t_ans = execute(
                         rtx, tenant_q, QueryMode.READ_ROWS,
                         component="ops_write_canary", db_name=db_name, address=address, stage="verify_tenant_exists",
-                        tenant_scoped=is_scoped, target_tenant_id=tenant_val, canary_target=target_kind,
                     )
                     t_rows = list(t_ans) if t_ans else []
                     if not t_rows:
@@ -196,7 +195,6 @@ def main() -> int:
                     execute(
                         tx, q, QueryMode.WRITE,
                         component="ops_write_canary", db_name=db_name, address=address, stage="canary_write",
-                        tenant_scoped=is_scoped, target_tenant_id=tenant_val, ownership_rel=used_rel, canary_target=target_kind,
                     )
                     tx.commit()
                     _diag(
@@ -241,7 +239,6 @@ def main() -> int:
                             execute(
                                 tx, q, QueryMode.WRITE,
                                 component="ops_write_canary", db_name=db_name, address=address, stage=f"canary_write_{rel}",
-                                tenant_scoped=is_scoped, target_tenant_id=tenant_val, ownership_rel=rel, canary_target=target_kind,
                             )
                             tx.commit()
                             _diag(
@@ -298,7 +295,6 @@ def main() -> int:
                         db_name=db_name,
                         address=address,
                         stage=f"canary_verify_attempt_{attempt}",
-                        tenant_scoped=is_scoped, target_tenant_id=tenant_val, ownership_rel=used_rel, canary_target=target_kind,
                     )
 
                     if res:
