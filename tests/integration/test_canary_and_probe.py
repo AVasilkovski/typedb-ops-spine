@@ -15,6 +15,35 @@ from pathlib import Path
 from tests.conftest import requires_typedb
 
 
+def _bootstrap_scoped_canary_db(db_name: str, tenant_id: str) -> None:
+    from typedb.driver import TransactionType
+
+    from typedb_ops_spine.readiness import connect_with_retries, ensure_database
+    from typedb_ops_spine.schema_apply import apply_schema
+
+    root = Path(__file__).resolve().parents[2]
+    schema_path = root / "examples" / "minimal_project" / "schema.tql"
+
+    address = os.getenv("TYPEDB_ADDRESS", "localhost:1729")
+    username = os.getenv("TYPEDB_USERNAME", "admin")
+    password = os.getenv("TYPEDB_PASSWORD", "password")
+
+    driver = connect_with_retries(
+        address, username, password,
+        retries=10, sleep_s=1.0,
+    )
+    try:
+        ensure_database(driver, db_name)
+        apply_schema(driver, db_name, [schema_path])
+        with driver.transaction(db_name, TransactionType.WRITE) as tx:
+            tx.query(
+                f'insert $t isa tenant, has tenant-id "{tenant_id}";'
+            ).resolve()
+            tx.commit()
+    finally:
+        driver.close()
+
+
 @requires_typedb
 class TestCanaryAndProbe:
     """Integration tests for canary and probe CLI tools."""
@@ -43,54 +72,12 @@ class TestCanaryAndProbe:
             f"Canary failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
 
-    def test_write_canary_tenant_scoped(self, tmp_path):
+    def test_write_canary_tenant_scoped(self):
         """Tenant-scoped canary should succeed if schema + tenant exists."""
         db_name = f"ops_spine_scoped_{os.urandom(4).hex()}"
+        tenant_id = "test-tenant-1"
 
-        # 1. Setup minimal schema + seed data using migrations
-        mig_dir = tmp_path / "migrations"
-        mig_dir.mkdir()
-
-        # 001: Schema (must include schema_version bookkeeping)
-        (mig_dir / "001_schema.tql").write_text(
-            "define \n"
-            "schema_version sub entity, owns ordinal, owns git-commit, owns applied-at;\n"
-            "ordinal sub attribute, value long;\n"
-            "git-commit sub attribute, value string;\n"
-            "applied-at sub attribute, value datetime;\n"
-            "tenant sub entity, owns tenant-id, plays tenant-ownership:owner;\n"
-            "tenant-id sub attribute, value string;\n"
-            "run-capsule sub entity, owns capsule-id, owns tenant-id, \n"
-            "owns session-id, owns created-at, owns query-hash, \n"
-            "owns scope-lock-id, owns intent-id, owns proposal-id, \n"
-            "plays tenant-ownership:owned;\n"
-            "capsule-id sub attribute, value string;\n"
-            "session-id sub attribute, value string;\n"
-            "created-at sub attribute, value datetime;\n"
-            "query-hash sub attribute, value string;\n"
-            "scope-lock-id sub attribute, value string;\n"
-            "intent-id sub attribute, value string;\n"
-            "proposal-id sub attribute, value string;\n"
-            "tenant-ownership sub relation, relates owner, relates owned;\n"
-        )
-
-        # 002: Seed Data
-        (mig_dir / "002_seed.tql").write_text(
-            'insert $t isa tenant, has tenant-id "test-tenant-1";'
-        )
-
-        # Run migrations to setup DB
-        res_setup = subprocess.run(
-            [
-                sys.executable, "-m",
-                "typedb_ops_spine.cli.migrate_cli",
-                "--database", db_name,
-                "--migrations-dir", str(mig_dir),
-                "--recreate"
-            ],
-            capture_output=True, text=True, timeout=60
-        )
-        assert res_setup.returncode == 0, f"Migration setup failed:\nSTDOUT: {res_setup.stdout}\nSTDERR: {res_setup.stderr}"
+        _bootstrap_scoped_canary_db(db_name, tenant_id)
 
         # 2. Run the canary with the valid created tenant
         result = subprocess.run(
@@ -98,7 +85,7 @@ class TestCanaryAndProbe:
                 sys.executable, "-m",
                 "typedb_ops_spine.cli.write_canary_cli",
                 "--database", db_name,
-                "--tenant-id", "test-tenant-1",
+                "--tenant-id", tenant_id,
                 "--ownership-rel", "tenant-ownership"
             ],
             capture_output=True,
