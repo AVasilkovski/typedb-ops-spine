@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 
 def _env_tls_override() -> bool | None:
@@ -90,6 +91,11 @@ def main() -> int:
         action="store_true",
         help="Fast-forward schema_version to head migration ordinal after authoritative apply.",
     )
+    p.add_argument(
+        "--reconcile-schema-version-head",
+        action="store_true",
+        help="Stamp only the repo head schema_version ordinal without reapplying schema.",
+    )
     args = p.parse_args()
 
     from typedb_ops_spine.readiness import (
@@ -99,12 +105,14 @@ def main() -> int:
         resolve_connection_config,
     )
     from typedb_ops_spine.schema_apply import (
+        SchemaVersionReconcileRequired,
         apply_schema,
         head_migration_ordinal,
         migrate_undefine_owns,
         migrate_undefine_plays,
         parse_canonical_caps,
         plan_auto_migrations,
+        reconcile_schema_version_head,
         resolve_schema_files,
         stamp_schema_version_head,
     )
@@ -112,53 +120,95 @@ def main() -> int:
     tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
-    raw_schema_args = args.schema or [
-        os.getenv("TYPEDB_SCHEMA", "schema.tql"),
-    ]
-
-    try:
-        schema_paths = resolve_schema_files(raw_schema_args)
-    except (ValueError, FileNotFoundError) as e:
-        print(f"[ops-apply-schema] ERROR: {e}", file=sys.stderr)
-        return 1
-
-    print("[ops-apply-schema] Resolved schema files:")
-    for path in schema_paths:
-        print(f"  - {path}")
-
+    schema_paths: list[Path] = []
     auto_owns_specs: list[tuple[str, str]] = []
     auto_plays_specs: list[tuple[str, str]] = []
-    if args.auto_migrate_redeclarations:
-        schema_text = "\n\n".join(
-            path.read_text(encoding="utf-8") for path in schema_paths
-        )
-        parent_of, owns_of, plays_of = parse_canonical_caps(schema_text)
-        auto_owns_specs, auto_plays_specs = plan_auto_migrations(
-            parent_of,
-            owns_of,
-            plays_of,
-        )
-        print(
-            "[ops-apply-schema] Auto-scrub planned "
-            f"owns={len(auto_owns_specs)} plays={len(auto_plays_specs)}"
-        )
 
-    if args.dry_run:
-        if auto_owns_specs or auto_plays_specs or args.undefine_owns or args.undefine_plays:
-            print("[ops-apply-schema] Planned guarded schema scrubs:")
-            for type_label, attribute in auto_owns_specs:
-                print(f"  - auto undefine owns {attribute} from {type_label}")
-            for type_label, scoped_role in auto_plays_specs:
-                print(f"  - auto undefine plays {scoped_role} from {type_label}")
-            for spec in args.undefine_owns:
-                print(f"  - manual undefine owns {spec}")
-            for spec in args.undefine_plays:
-                print(f"  - manual undefine plays {spec}")
+    if args.reconcile_schema_version_head:
+        conflicts: list[str] = []
+        if args.schema:
+            conflicts.append("--schema")
         if args.scrub_only:
-            print("[ops-apply-schema] dry-run: scrub-only mode; canonical schema apply would be skipped")
-        else:
-            print("[ops-apply-schema] dry-run: canonical schema apply would run")
-        return 0
+            conflicts.append("--scrub-only")
+        if args.auto_migrate_redeclarations:
+            conflicts.append("--auto-migrate-redeclarations")
+        if args.undefine_owns:
+            conflicts.append("--undefine-owns")
+        if args.undefine_plays:
+            conflicts.append("--undefine-plays")
+        if args.dry_run:
+            conflicts.append("--dry-run")
+        if args.recreate:
+            conflicts.append("--recreate")
+        if args.stamp_schema_version_head:
+            conflicts.append("--stamp-schema-version-head")
+        if conflicts:
+            print(
+                "[ops-apply-schema] ERROR: --reconcile-schema-version-head cannot "
+                f"be combined with {', '.join(conflicts)}",
+                file=sys.stderr,
+            )
+            return 1
+        if not args.migrations_dir:
+            print(
+                "[ops-apply-schema] ERROR: --reconcile-schema-version-head requires "
+                "--migrations-dir",
+                file=sys.stderr,
+            )
+            return 1
+        if not Path(args.migrations_dir).is_dir():
+            print(
+                "[ops-apply-schema] ERROR: Migrations directory not found: "
+                f"{args.migrations_dir}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        raw_schema_args = args.schema or [
+            os.getenv("TYPEDB_SCHEMA", "schema.tql"),
+        ]
+
+        try:
+            schema_paths = resolve_schema_files(raw_schema_args)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"[ops-apply-schema] ERROR: {e}", file=sys.stderr)
+            return 1
+
+        print("[ops-apply-schema] Resolved schema files:")
+        for path in schema_paths:
+            print(f"  - {path}")
+
+        if args.auto_migrate_redeclarations:
+            schema_text = "\n\n".join(
+                path.read_text(encoding="utf-8") for path in schema_paths
+            )
+            parent_of, owns_of, plays_of = parse_canonical_caps(schema_text)
+            auto_owns_specs, auto_plays_specs = plan_auto_migrations(
+                parent_of,
+                owns_of,
+                plays_of,
+            )
+            print(
+                "[ops-apply-schema] Auto-scrub planned "
+                f"owns={len(auto_owns_specs)} plays={len(auto_plays_specs)}"
+            )
+
+        if args.dry_run:
+            if auto_owns_specs or auto_plays_specs or args.undefine_owns or args.undefine_plays:
+                print("[ops-apply-schema] Planned guarded schema scrubs:")
+                for type_label, attribute in auto_owns_specs:
+                    print(f"  - auto undefine owns {attribute} from {type_label}")
+                for type_label, scoped_role in auto_plays_specs:
+                    print(f"  - auto undefine plays {scoped_role} from {type_label}")
+                for spec in args.undefine_owns:
+                    print(f"  - manual undefine owns {spec}")
+                for spec in args.undefine_plays:
+                    print(f"  - manual undefine plays {spec}")
+            if args.scrub_only:
+                print("[ops-apply-schema] dry-run: scrub-only mode; canonical schema apply would be skipped")
+            else:
+                print("[ops-apply-schema] dry-run: canonical schema apply would run")
+            return 0
 
     try:
         address, resolved_tls, ca_path = resolve_connection_config(
@@ -188,37 +238,58 @@ def main() -> int:
 
         ensure_database(driver, args.database)
 
-        if auto_owns_specs:
-            migrate_undefine_owns(
+        if args.reconcile_schema_version_head:
+            reconciled = reconcile_schema_version_head(
                 driver,
                 args.database,
-                [f"{type_label}:{attribute}" for type_label, attribute in auto_owns_specs],
+                Path(args.migrations_dir),
             )
-        if auto_plays_specs:
-            migrate_undefine_plays(
-                driver,
-                args.database,
-                [f"{type_label}:{scoped_role}" for type_label, scoped_role in auto_plays_specs],
+            print(
+                "[ops-apply-schema] Reconciled schema_version head "
+                f"ordinal to {reconciled}."
             )
-
-        if args.undefine_plays:
-            migrate_undefine_plays(driver, args.database, args.undefine_plays)
-        if args.undefine_owns:
-            migrate_undefine_owns(driver, args.database, args.undefine_owns)
-
-        if args.scrub_only:
-            print("[ops-apply-schema] scrub-only: skipping canonical schema apply")
         else:
-            apply_schema(driver, args.database, schema_paths)
+            if auto_owns_specs:
+                migrate_undefine_owns(
+                    driver,
+                    args.database,
+                    [f"{type_label}:{attribute}" for type_label, attribute in auto_owns_specs],
+                )
+            if auto_plays_specs:
+                migrate_undefine_plays(
+                    driver,
+                    args.database,
+                    [f"{type_label}:{scoped_role}" for type_label, scoped_role in auto_plays_specs],
+                )
 
-            if args.stamp_schema_version_head and args.migrations_dir:
-                from pathlib import Path
+            if args.undefine_plays:
+                migrate_undefine_plays(driver, args.database, args.undefine_plays)
+            if args.undefine_owns:
+                migrate_undefine_owns(driver, args.database, args.undefine_owns)
 
-                mig_dir = Path(args.migrations_dir)
-                head_ord = head_migration_ordinal(mig_dir)
-                if head_ord > 0:
-                    stamp_schema_version_head(driver, args.database, head_ord)
+            if args.scrub_only:
+                print("[ops-apply-schema] scrub-only: skipping canonical schema apply")
+            else:
+                apply_schema(driver, args.database, schema_paths)
+
+                if args.stamp_schema_version_head and args.migrations_dir:
+                    mig_dir = Path(args.migrations_dir)
+                    head_ord = head_migration_ordinal(mig_dir)
+                    if head_ord > 0:
+                        stamp_schema_version_head(
+                            driver,
+                            args.database,
+                            head_ord,
+                            migrations_dir=mig_dir,
+                        )
         print("[ops-apply-schema] Done.")
+    except SchemaVersionReconcileRequired as e:
+        print(f"[ops-apply-schema] ERROR: {e}", file=sys.stderr)
+        print(f"[ops-apply-schema] Recovery: {e.recovery_command}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"[ops-apply-schema] ERROR: {e}", file=sys.stderr)
+        return 1
     finally:
         driver.close()
 

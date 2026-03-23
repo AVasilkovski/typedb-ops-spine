@@ -164,3 +164,53 @@ class TestApplySchemaAndMigrate:
 
         assert get_current_schema_version(driver, isolated_db) == head
         assert run_migrations(driver, isolated_db, example_migrations) == 0
+
+    def test_reconcile_schema_version_head_restores_parity_after_authoritative_apply(
+        self, driver, isolated_db, example_schema, example_migrations,
+    ):
+        """Reconcile-only head stamping should restore parity after authoritative apply."""
+        from typedb_ops_spine.readiness import ensure_database
+        from typedb_ops_spine.schema_apply import (
+            apply_schema,
+            reconcile_schema_version_head,
+        )
+        from typedb_ops_spine.schema_health import check_health
+
+        ensure_database(driver, isolated_db)
+        apply_schema(driver, isolated_db, [example_schema])
+
+        reconciled = reconcile_schema_version_head(
+            driver,
+            isolated_db,
+            example_migrations,
+        )
+        healthy, repo_ord, db_ord = check_health(
+            driver,
+            isolated_db,
+            str(example_migrations),
+        )
+
+        assert reconciled == 1
+        assert healthy, f"Expected parity after reconcile, got repo={repo_ord} db={db_ord}"
+
+    def test_reconcile_migration_ordinal_leaves_no_pending_migrations(
+        self, driver, isolated_db, example_migrations,
+    ):
+        """Reconcile-only ordinal recording should leave no pending migration rerun."""
+        from typedb.driver import TransactionType
+
+        from typedb_ops_spine.migrate import reconcile_migration_ordinal, run_migrations
+        from typedb_ops_spine.readiness import ensure_database
+
+        ensure_database(driver, isolated_db)
+
+        bootstrap_query = (example_migrations / "001_bootstrap.tql").read_text(
+            encoding="utf-8",
+        )
+        with driver.transaction(isolated_db, TransactionType.SCHEMA) as tx:
+            tx.query(bootstrap_query).resolve()
+            tx.commit()
+
+        reconcile_migration_ordinal(driver, isolated_db, example_migrations, 1)
+
+        assert run_migrations(driver, isolated_db, example_migrations) == 0
