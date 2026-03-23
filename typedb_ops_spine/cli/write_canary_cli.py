@@ -5,8 +5,8 @@ Write→commit→read durability check with identity logging and
 decision-grade diagnostics emission. Fail-slow.
 
 Default queries target the packaged tenant-based example profile. The scoped
-mode extends that to the tenant/run-capsule relation shapes used by
-SuperHyperion-compatible schemas.
+mode extends that to the tenant/run-capsule relation shapes used by the
+bundled example profile.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def main() -> int:
     )
     p.add_argument(
         "--tenant-id",
-        help="Optional tenant ID to write a scoped canary (SuperHyperion-profile).",
+        help="Optional tenant ID to write a scoped canary for the bundled example profile.",
     )
     p.add_argument(
         "--ownership-rel",

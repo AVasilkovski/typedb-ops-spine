@@ -15,6 +15,9 @@ The supported install paths today are:
 
 Do not rely on `pip install typedb-ops-spine` until a real package release exists.
 
+Private beta notes live in [PRIVATE_BETA.md](PRIVATE_BETA.md). Release history
+lives in [CHANGELOG.md](CHANGELOG.md).
+
 ## Recent operator-facing changes
 
 - `ops-schema-health` now exits non-zero on missing or invalid connection config instead of treating invalid config like a skip.

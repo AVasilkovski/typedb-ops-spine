@@ -3,7 +3,7 @@ CLI entry point: ops-min-write-probe — The Arbiter
 
 PROVES: Which write shapes and materialization patterns persist in the canonical schema.
 Operates as a fail-slow diagnostic tool using isolated databases.
-This probe currently targets the packaged tenant/run-capsule example profile.
+This probe currently targets the bundled tenant/run-capsule example profile.
 
 5 Variants:
   1. tenant_only_insert_ok       — simple insert
