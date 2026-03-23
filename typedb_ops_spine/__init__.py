@@ -19,6 +19,11 @@ from typedb_ops_spine.readiness import (
     resolve_connection_config,
     validate_connection_config,
 )
+from typedb_ops_spine.schema_health import (
+    SchemaHealthExtraResult,
+    SchemaHealthReport,
+    run_health_checks,
+)
 from typedb_ops_spine.typedb_diag import run_smoke_diagnostics
 
 __version__ = "0.2.0"
@@ -37,5 +42,8 @@ __all__ = [
     "resolve_connection_config",
     "validate_connection_config",
     "infer_tls_enabled",
+    "SchemaHealthExtraResult",
+    "SchemaHealthReport",
+    "run_health_checks",
     "run_smoke_diagnostics",
 ]

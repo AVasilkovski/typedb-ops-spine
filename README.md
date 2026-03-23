@@ -71,6 +71,17 @@ uses that install shape and the library's protocol-level readiness check.
 - `ops-typedb-diag`: connectivity, database presence, and optional smoke query verification
 - `ops-tsv-extract`: TSV extraction for emitted diagnostics
 
+`ops-schema-health` also supports an optional caller-supplied invariant hook:
+
+```bash
+ops-schema-health \
+  --migrations-dir migrations \
+  --database my_db \
+  --extra-invariant package.module:function
+```
+
+Use this when a consuming repo wants to add one extra health invariant after ordinal parity without forking the generic package.
+
 The package also ships `ops-write-canary` and `ops-min-write-probe`. Those are bundled example-profile diagnostics for the tenant/run-capsule schema under `examples/minimal_project`; they are not the primary onboarding path for generic users.
 
 ## Connection settings

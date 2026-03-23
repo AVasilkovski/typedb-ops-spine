@@ -7,8 +7,10 @@ Checks schema version drift between repo migrations and database state.
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
+from typing import Any, Callable
 
 
 def _env_tls_override() -> bool | None:
@@ -16,6 +18,38 @@ def _env_tls_override() -> bool | None:
     if raw is None:
         return None
     return raw.lower() == "true"
+
+
+def _load_extra_invariant(spec: str) -> Callable[[Any, str], object]:
+    if spec.count(":") != 1:
+        raise ValueError(
+            "Invalid --extra-invariant value. Expected format 'module:function'."
+        )
+
+    module_name, func_name = spec.split(":", maxsplit=1)
+    if not module_name or not func_name:
+        raise ValueError(
+            "Invalid --extra-invariant value. Expected format 'module:function'."
+        )
+
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(
+            f"Failed to import extra invariant module '{module_name}': {exc}"
+        ) from exc
+
+    try:
+        target = getattr(module, func_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Extra invariant target not found: '{spec}'."
+        ) from exc
+
+    if not callable(target):
+        raise ValueError(f"Extra invariant target '{spec}' is not callable.")
+
+    return target
 
 
 def main() -> int:
@@ -41,6 +75,11 @@ def main() -> int:
     p.add_argument(
         "--password", default=os.getenv("TYPEDB_PASSWORD", "password"),
     )
+    p.add_argument(
+        "--extra-invariant",
+        default=None,
+        help="Optional extra invariant hook to run after ordinal parity, format: module:function",
+    )
     args = p.parse_args()
 
     from typedb_ops_spine.readiness import (
@@ -48,7 +87,17 @@ def main() -> int:
         connect_with_retries,
         resolve_connection_config,
     )
-    from typedb_ops_spine.schema_health import check_health
+    from typedb_ops_spine.schema_health import run_health_checks
+
+    extra_invariant = None
+    extra_name = "extra_invariant"
+    if args.extra_invariant:
+        try:
+            extra_invariant = _load_extra_invariant(args.extra_invariant)
+            extra_name = args.extra_invariant
+        except ValueError as e:
+            print(f"[ops-schema-health] ERROR: {e}", file=sys.stderr)
+            return 1
 
     tls = _env_tls_override()
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
@@ -74,17 +123,35 @@ def main() -> int:
         ca_path=ca_path,
     )
     try:
-        healthy, repo_ord, db_ord = check_health(
-            driver, args.database, args.migrations_dir,
+        report = run_health_checks(
+            driver,
+            args.database,
+            args.migrations_dir,
+            extra_invariant=extra_invariant,
+            extra_name=extra_name,
         )
-        print(f"[ops-schema-health] Repo ordinal: {repo_ord}")
-        print(f"[ops-schema-health] DB ordinal:   {db_ord}")
-        if healthy:
+        print(f"[ops-schema-health] Repo ordinal: {report.repo_ordinal}")
+        print(f"[ops-schema-health] DB ordinal:   {report.db_ordinal}")
+
+        if report.extra_result is not None:
+            result = report.extra_result
+            if result.skipped:
+                print(f"[ops-schema-health] Extra invariant '{result.name}': SKIP: ordinal drift")
+            elif result.ok:
+                print(f"[ops-schema-health] Extra invariant '{result.name}': PASS")
+            elif result.message:
+                print(f"[ops-schema-health] Extra invariant '{result.name}': FAIL: {result.message}")
+            else:
+                print(f"[ops-schema-health] Extra invariant '{result.name}': FAIL")
+
+        if report.healthy:
             print("[ops-schema-health] PASS: parity OK")
             return 0
-        else:
+        if report.repo_ordinal != report.db_ordinal:
             print("[ops-schema-health] FAIL: drift detected")
-            return 1
+        else:
+            print("[ops-schema-health] FAIL: extra invariant failed")
+        return 1
     except Exception as e:
         print(f"[ops-schema-health] ERROR: {e}", file=sys.stderr)
         return 1
