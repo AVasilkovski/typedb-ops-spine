@@ -15,6 +15,10 @@ The supported install paths today are:
 
 Do not rely on `pip install typedb-ops-spine` until a real package release exists.
 
+## Recent operator-facing changes
+
+- `ops-schema-health` now exits non-zero on missing or invalid connection config instead of treating invalid config like a skip.
+
 ## Standalone quickstart
 
 This is the copy-paste path that works today from a fresh checkout:
@@ -101,6 +105,8 @@ Validation is fail-fast:
 - `TYPEDB_ROOT_CA_PATH` is only valid with HTTPS/TLS connections
 
 This avoids wasting the full retry budget on deterministic configuration errors.
+
+`ops-typedb-diag` and `run_smoke_diagnostics()` validate address/TLS/CA settings before any retry loop. Deterministic config errors raise `TypeDBConfigError` immediately; only network/service-readiness failures consume retries.
 
 ## Library usage
 

@@ -124,6 +124,14 @@ def test_resolve_connection_config_prefers_explicit_address():
     assert ca_path is None
 
 
+def test_resolve_connection_config_defaults_to_local_non_tls():
+    address, tls, ca_path = resolve_connection_config(None, "localhost", 1729)
+
+    assert address == "localhost:1729"
+    assert tls is False
+    assert ca_path is None
+
+
 def test_validate_connection_config_rejects_tls_enabled_on_localhost():
     with pytest.raises(TypeDBConfigError, match="TLS is enabled but the resolved TypeDB address is not HTTPS"):
         validate_connection_config("localhost:1729", tls=True)

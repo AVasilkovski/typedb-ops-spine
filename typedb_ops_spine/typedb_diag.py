@@ -52,7 +52,18 @@ def run_smoke_diagnostics(
     retries: int = 30,
     sleep_s: float = 2.0,
 ) -> int:
-    """Run connectivity/database/smoke-query diagnostics against TypeDB."""
+    """Run connectivity/database/smoke-query diagnostics against TypeDB.
+
+    Connection settings are validated before any retry loop begins.
+    Deterministic address/TLS/CA mistakes raise ``TypeDBConfigError``
+    immediately; only network/service-readiness failures consume retries.
+
+    Returns:
+        ``0`` on success, otherwise ``1``.
+
+    Raises:
+        TypeDBConfigError: if the address/TLS/CA configuration is invalid.
+    """
     resolved_address, resolved_tls, resolved_ca_path = validate_connection_config(
         address,
         tls=tls,
