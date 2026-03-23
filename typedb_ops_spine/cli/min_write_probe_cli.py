@@ -191,7 +191,7 @@ def main() -> int:
             ca_path=ca_path,
         )
     except TypeDBConfigError as e:
-        print(f"Probe FATAL: {e}", file=sys.stderr)
+        print(f"[ops-min-write-probe] ERROR: {e}", file=sys.stderr)
         return 1
     use_db = f"{args.database_prefix}_{uuid.uuid4().hex[:6]}"
     driver_version = getattr(typedb, "__version__", "unknown")
@@ -386,6 +386,6 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as e:
-        print(f"Probe FATAL: {e}")
+        print(f"[ops-min-write-probe] ERROR: {e}", file=sys.stderr)
         traceback.print_exc()
         sys.exit(1)
