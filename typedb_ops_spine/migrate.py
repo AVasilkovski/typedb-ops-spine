@@ -15,6 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from typedb_ops_spine.schema_version import (
+    SchemaVersionReconcileRequired,
+    _write_schema_version_record,
+    record_schema_version,
+)
+from typedb_ops_spine.schema_version import (
+    get_current_schema_version as _get_current_schema_version,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,54 +53,16 @@ def _query_meta(query: str) -> dict[str, str]:
 
 
 def get_current_schema_version(driver: Any, db: str) -> int:
-    """Read the current schema version ordinal from the database.
-
-    Queries the ``schema_version`` entity for ``ordinal`` attributes.
-    Returns 0 if no version is found (e.g. fresh database).
-    """
-    from typedb.driver import TransactionType
-
-    query = "match $v isa schema_version, has ordinal $o; select $o;"
-    try:
-        with driver.transaction(db, TransactionType.READ) as tx:
-            ans = tx.query(query).resolve()
-            rows = list(ans.as_concept_rows())
-
-            ordinals = []
-            for r in rows:
-                o_attr = r.get("o")
-                if o_attr and o_attr.is_attribute():
-                    ordinals.append(int(o_attr.as_attribute().get_value()))
-            ordinal = max(ordinals) if ordinals else 0
-            _emit_diag({
-                "db": db,
-                "tx_type": "READ",
-                **_query_meta(query),
-                "stage": "schema_version_read",
-                "status": "success",
-                "answer_kind": "concept_rows",
-                "row_count": len(rows),
-                "doc_count": 0,
-                "error_class": None,
-                "error_message": None,
-                "ordinal": ordinal,
-            })
-            return ordinal
-    except Exception as e:
-        _emit_diag({
-            "db": db,
-            "tx_type": "READ",
-            **_query_meta(query),
-            "stage": "schema_version_read",
-            "status": "fail",
-            "error_class": e.__class__.__name__,
-            "error_message": str(e),
-            "answer_kind": None,
-            "row_count": 0,
-            "doc_count": 0,
-        })
-        logger.warning("schema_version query failed (assuming 0): %s", e)
-        return 0
+    """Read the current schema version ordinal from the database."""
+    ordinal = _get_current_schema_version(
+        driver,
+        db,
+        emit_event=_emit_diag,
+        meta_factory=_query_meta,
+    )
+    if ordinal == 0:
+        logger.info("Current schema version ordinal is 0 (fresh DB or unreadable state)")
+    return ordinal
 
 
 def get_migrations(
@@ -162,23 +133,36 @@ def get_migrations(
     return valid_files
 
 
-def _materialize_write_answer(ans: Any) -> None:
-    """Force TypeDB write answers through the Rows -> Docs -> OK barrier.
+def _reconcile_ordinal_command(db: str, migrations_dir: Path, ordinal: int) -> str:
+    return (
+        "ops-migrate "
+        f'--database "{db}" '
+        f'--migrations-dir "{migrations_dir}" '
+        f"--reconcile-ordinal {ordinal}"
+    )
 
-    This makes the schema_version recording write explicit before commit, but it
-    does not make migrations atomic: schema application and version stamping
-    still happen in separate transactions.
-    """
-    if hasattr(ans, "is_concept_rows") and ans.is_concept_rows():
-        list(ans.as_concept_rows())
-        return
 
-    if hasattr(ans, "is_concept_documents") and ans.is_concept_documents():
-        list(ans.as_concept_documents())
-        return
-
-    if hasattr(ans, "is_ok") and ans.is_ok() and hasattr(ans, "as_ok"):
-        ans.as_ok()
+def _emit_reconcile_required(
+    *,
+    db: str,
+    exc: SchemaVersionReconcileRequired,
+) -> None:
+    original_error = exc.original_error
+    _emit_diag({
+        "db": db,
+        "tx_type": "WRITE",
+        "stage": "reconcile_required",
+        "status": "fail",
+        "answer_kind": None,
+        "row_count": 0,
+        "doc_count": 0,
+        "target_ordinal": exc.target_ordinal,
+        "source_kind": exc.source_kind,
+        "source_name": exc.source_name,
+        "recovery_command": exc.recovery_command,
+        "error_class": original_error.__class__.__name__,
+        "error_message": str(original_error),
+    })
 
 
 def apply_migration(
@@ -223,13 +207,6 @@ def apply_migration(
         logger.info("Dry-run: skipping %s", migration_file.name)
         return
 
-    git_commit = os.getenv("GITHUB_SHA", "unknown")
-    applied_at = (
-        datetime.now(timezone.utc)
-        .replace(tzinfo=None)
-        .isoformat(timespec="microseconds")
-    )
-
     # Step 1: Apply schema change
     try:
         with driver.transaction(db, TransactionType.SCHEMA) as tx:
@@ -268,49 +245,66 @@ def apply_migration(
         ) from e
 
     # Step 2: Record schema version
-    version_query = (
-        f"insert $v isa schema_version, "
-        f'has ordinal {next_ordinal}, '
-        f'has git-commit "{git_commit}", '
-        f"has applied-at {applied_at};"
-    )
-
     try:
-        with driver.transaction(db, TransactionType.WRITE) as tx:
-            ans = tx.query(version_query).resolve()
-            _materialize_write_answer(ans)
-            tx.commit()
-            _emit_diag({
-                "db": db,
-                "tx_type": "WRITE",
-                **_query_meta(version_query),
-                "stage": "record_schema_version",
-                "status": "success",
-                "error_class": None,
-                "error_message": None,
-                "answer_kind": "ok",
-                "row_count": 0,
-                "doc_count": 0,
-                "migration": migration_file.name,
-            })
-    except Exception as e:
-        _emit_diag({
-            "db": db,
-            "tx_type": "WRITE",
-            **_query_meta(version_query),
-            "stage": "record_schema_version",
-            "status": "fail",
-            "error_class": e.__class__.__name__,
-            "error_message": str(e),
-            "answer_kind": None,
-            "row_count": 0,
-            "doc_count": 0,
-            "migration": migration_file.name,
-        })
+        record_schema_version(
+            driver,
+            db,
+            next_ordinal,
+            source_kind="migration",
+            source_name=migration_file.name,
+            recovery_command=_reconcile_ordinal_command(
+                db,
+                migration_file.parent,
+                next_ordinal,
+            ),
+            emit_event=_emit_diag,
+            meta_factory=_query_meta,
+        )
+    except SchemaVersionReconcileRequired as exc:
+        _emit_reconcile_required(db=db, exc=exc)
+        raise
+
+
+def reconcile_migration_ordinal(
+    driver: Any,
+    db: str,
+    migrations_dir: Path,
+    ordinal: int,
+    *,
+    allow_gaps: bool = False,
+) -> None:
+    """Record a missing schema_version ordinal without rerunning SCHEMA work."""
+    all_migrations = get_migrations(migrations_dir, allow_gaps=allow_gaps)
+    known_ordinals = {value for value, _path in all_migrations}
+    if ordinal not in known_ordinals:
+        raise ValueError(
+            f"Cannot reconcile ordinal {ordinal}: migration not found in {migrations_dir}"
+        )
+
+    current_ordinal = get_current_schema_version(driver, db)
+    if ordinal <= current_ordinal:
+        raise ValueError(
+            f"Cannot reconcile ordinal {ordinal}: current schema_version is {current_ordinal}"
+        )
+
+    migration_name = next(
+        path.name for value, path in all_migrations if value == ordinal
+    )
+    try:
+        _write_schema_version_record(
+            driver,
+            db,
+            ordinal,
+            source_kind="migration_reconcile",
+            source_name=migration_name,
+            recovery_command=_reconcile_ordinal_command(db, migrations_dir, ordinal),
+            emit_event=_emit_diag,
+            meta_factory=_query_meta,
+        )
+    except Exception as exc:
         raise RuntimeError(
-            f"Failed WRITE transaction for {migration_file.name} "
-            f"(Ordinal: {next_ordinal}): {e}"
-        ) from e
+            f"Failed reconcile WRITE for migration ordinal {ordinal}: {exc}"
+        ) from exc
 
 
 def run_migrations(

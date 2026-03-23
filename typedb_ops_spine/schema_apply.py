@@ -19,6 +19,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from typedb_ops_spine.schema_version import (
+    SchemaVersionReconcileRequired,
+    _write_schema_version_record,
+    record_schema_version,
+)
+from typedb_ops_spine.schema_version import (
+    get_current_schema_version as _get_current_schema_version,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -357,8 +366,9 @@ def apply_schema(
 ) -> None:
     """Apply schema file(s) to a TypeDB database using SCHEMA transactions.
 
-    Each schema file is applied in a separate SCHEMA transaction.
-    Diagnostics are emitted for both success and failure.
+    All schema files are applied within one SCHEMA transaction so authoritative
+    multi-file apply is atomic across files. Diagnostics are emitted for both
+    success and failure.
 
     Args:
         driver: Connected TypeDB driver.
@@ -367,58 +377,62 @@ def apply_schema(
     """
     from typedb.driver import TransactionType
 
-    for schema_path in schema_paths:
-        schema = schema_path.read_text(encoding="utf-8")
-        try:
-            with driver.transaction(db, TransactionType.SCHEMA) as tx:
+    schema_texts = [
+        (schema_path, schema_path.read_text(encoding="utf-8"))
+        for schema_path in schema_paths
+    ]
+    bundle_query = "\n\n".join(schema for _, schema in schema_texts)
+    schema_files = ",".join(path.name for path, _ in schema_texts)
+
+    try:
+        with driver.transaction(db, TransactionType.SCHEMA) as tx:
+            for _, schema in schema_texts:
                 tx.query(schema).resolve()
-                tx.commit()
-            _emit_diag({
-                "db": db,
-                "tx_type": "SCHEMA",
-                **_query_meta(schema),
-                "stage": "apply_schema",
-                "status": "success",
-                "error_class": None,
-                "error_message": None,
-                "answer_kind": "ok",
-                "row_count": 0,
-                "doc_count": 0,
-            })
-            logger.info("Schema applied: %s", schema_path)
-        except Exception as exc:
-            _emit_diag({
-                "db": db,
-                "tx_type": "SCHEMA",
-                **_query_meta(schema),
-                "stage": "apply_schema",
-                "status": "fail",
-                "error_class": exc.__class__.__name__,
-                "error_message": str(exc),
-                "answer_kind": None,
-                "row_count": 0,
-                "doc_count": 0,
-            })
-            raise
+            tx.commit()
+
+        _emit_diag({
+            "db": db,
+            "tx_type": "SCHEMA",
+            **_query_meta(bundle_query),
+            "stage": "apply_schema",
+            "status": "success",
+            "error_class": None,
+            "error_message": None,
+            "answer_kind": "ok",
+            "row_count": 0,
+            "doc_count": 0,
+            "schema_count": len(schema_texts),
+            "schema_files": schema_files,
+        })
+        logger.info("Schema bundle applied atomically: %s", schema_files)
+    except Exception as exc:
+        failure_note = (
+            "No authoritative multi-file bundle commit completed; partial "
+            "multi-file apply is not expected."
+        )
+        _emit_diag({
+            "db": db,
+            "tx_type": "SCHEMA",
+            **_query_meta(bundle_query),
+            "stage": "apply_schema",
+            "status": "fail",
+            "error_class": exc.__class__.__name__,
+            "error_message": f"{exc} {failure_note}",
+            "answer_kind": None,
+            "row_count": 0,
+            "doc_count": 0,
+            "schema_count": len(schema_texts),
+            "schema_files": schema_files,
+        })
+        raise RuntimeError(
+            f"Failed authoritative schema bundle apply for {schema_files}: {exc}. "
+            f"{failure_note}"
+        ) from exc
 
 
 def get_current_schema_version(driver: Any, db: str) -> int:
-    """Read current schema version ordinal with safe materialization."""
-    from typedb.driver import TransactionType
-
-    query = "match $v isa schema_version, has ordinal $o; select $o;"
-    try:
-        with driver.transaction(db, TransactionType.READ) as tx:
-            ans = tx.query(query).resolve()
-            rows = list(ans.as_concept_rows())
-            ordinals = []
-            for r in rows:
-                o_attr = r.get("o")
-                if o_attr and o_attr.is_attribute():
-                    ordinals.append(int(o_attr.as_attribute().get_value()))
-            return max(ordinals) if ordinals else 0
-    except Exception:
-        return 0
+    """Read current schema version ordinal."""
+    return _get_current_schema_version(driver, db)
 
 
 def head_migration_ordinal(migrations_dir: Path) -> int:
@@ -435,13 +449,50 @@ def head_migration_ordinal(migrations_dir: Path) -> int:
     return max(ordinals) if ordinals else 0
 
 
-def stamp_schema_version_head(driver: Any, db: str, head_ordinal: int) -> None:
+def _reconcile_head_command(db: str, migrations_dir: Path | None) -> str:
+    migrations_value = str(migrations_dir) if migrations_dir is not None else "<migrations-dir>"
+    return (
+        "ops-apply-schema "
+        f'--database "{db}" '
+        f'--migrations-dir "{migrations_value}" '
+        "--reconcile-schema-version-head"
+    )
+
+
+def _emit_reconcile_required(
+    *,
+    db: str,
+    exc: SchemaVersionReconcileRequired,
+) -> None:
+    original_error = exc.original_error
+    _emit_diag({
+        "db": db,
+        "tx_type": "WRITE",
+        "stage": "reconcile_required",
+        "status": "fail",
+        "answer_kind": None,
+        "row_count": 0,
+        "doc_count": 0,
+        "target_ordinal": exc.target_ordinal,
+        "source_kind": exc.source_kind,
+        "source_name": exc.source_name,
+        "recovery_command": exc.recovery_command,
+        "error_class": original_error.__class__.__name__,
+        "error_message": str(original_error),
+    })
+
+
+def stamp_schema_version_head(
+    driver: Any,
+    db: str,
+    head_ordinal: int,
+    *,
+    migrations_dir: Path | None = None,
+) -> None:
     """
     INSERT a new schema_version row to fast-forward an authoritative schema install.
     Guards: No-op if head <= 0 or current >= head.
     """
-    from typedb.driver import TransactionType
-
     if head_ordinal <= 0:
         return
 
@@ -450,45 +501,66 @@ def stamp_schema_version_head(driver: Any, db: str, head_ordinal: int) -> None:
         logger.info("[ops-apply-schema] skip stamping: current_ordinal=%d head_ordinal=%d", current, head_ordinal)
         return
 
-    git_commit = os.getenv("GITHUB_SHA", "unknown")
-    applied_at = (
-        datetime.now(timezone.utc)
-        .replace(tzinfo=None)
-        .isoformat(timespec="microseconds")
+    logger.info(
+        "[ops-apply-schema] stamping schema_version: %d -> %d "
+        "(authoritative schema applied)",
+        current,
+        head_ordinal,
     )
 
-    query = f"""
-    insert $v isa schema_version,
-      has ordinal {head_ordinal},
-      has git-commit "{git_commit}",
-      has applied-at {applied_at};
-    """
+    try:
+        record_schema_version(
+            driver,
+            db,
+            head_ordinal,
+            source_kind="authoritative_apply",
+            source_name=str(migrations_dir) if migrations_dir is not None else "head_migration_ordinal",
+            recovery_command=_reconcile_head_command(db, migrations_dir),
+            emit_event=_emit_diag,
+            meta_factory=_query_meta,
+        )
+    except SchemaVersionReconcileRequired as exc:
+        _emit_reconcile_required(db=db, exc=exc)
+        raise
 
-    logger.info("[ops-apply-schema] stamping schema_version: %d -> %d (authoritative schema applied)", current, head_ordinal)
+
+def reconcile_schema_version_head(
+    driver: Any,
+    db: str,
+    migrations_dir: Path,
+) -> int:
+    """Stamp only the repo head ordinal without reapplying authoritative schema."""
+    if not migrations_dir.is_dir():
+        raise FileNotFoundError(f"migrations_dir not found: {migrations_dir}")
+
+    head_ordinal = head_migration_ordinal(migrations_dir)
+    if head_ordinal <= 0:
+        logger.info("[ops-apply-schema] no head ordinal found to reconcile")
+        return 0
+
+    current = get_current_schema_version(driver, db)
+    if current >= head_ordinal:
+        logger.info(
+            "[ops-apply-schema] reconcile skipped: current_ordinal=%d head_ordinal=%d",
+            current,
+            head_ordinal,
+        )
+        return current
 
     try:
-        with driver.transaction(db, TransactionType.WRITE) as tx:
-            ans = tx.query(query).resolve()
+        _write_schema_version_record(
+            driver,
+            db,
+            head_ordinal,
+            source_kind="authoritative_reconcile",
+            source_name=str(migrations_dir),
+            recovery_command=_reconcile_head_command(db, migrations_dir),
+            emit_event=_emit_diag,
+            meta_factory=_query_meta,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed reconcile WRITE for schema_version head {head_ordinal}: {exc}"
+        ) from exc
 
-            # Safe materialization barrier (Rows -> Docs -> OK)
-            if ans.is_concept_rows():
-                list(ans.as_concept_rows())
-            elif ans.is_concept_documents():
-                list(ans.as_concept_documents())
-            elif ans.is_ok():
-                ans.as_ok()
-
-            tx.commit()
-
-            _emit_diag({
-                "db": db, "tx_type": "WRITE", **_query_meta(query),
-                "stage": "stamp_schema_version", "status": "success",
-                "answer_kind": "ok", "head_ordinal": head_ordinal
-            })
-    except Exception as e:
-        _emit_diag({
-            "db": db, "tx_type": "WRITE", **_query_meta(query),
-            "stage": "stamp_schema_version", "status": "fail",
-            "error_class": e.__class__.__name__, "error_message": str(e)
-        })
-        raise RuntimeError(f"Failed to stamp schema_version to head ordinal {head_ordinal}: {e}")
+    return head_ordinal

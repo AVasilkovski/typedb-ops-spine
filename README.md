@@ -88,6 +88,30 @@ Use this when a consuming repo wants to add one extra health invariant after ord
 
 The package also ships `ops-write-canary` and `ops-min-write-probe`. Those are bundled example-profile diagnostics for the tenant/run-capsule schema under `examples/minimal_project`; they are not the primary onboarding path for generic users.
 
+## Recovery after stamp failure
+
+If authoritative schema apply or a migration reports that `schema_version`
+recording failed after SCHEMA work succeeded, do not rerun the full command
+blindly. Use the explicit stamp-only reconcile path instead.
+
+Authoritative apply reconcile:
+
+```bash
+ops-apply-schema \
+  --database my_db \
+  --migrations-dir migrations \
+  --reconcile-schema-version-head
+```
+
+Migration ordinal reconcile:
+
+```bash
+ops-migrate \
+  --database my_db \
+  --migrations-dir migrations \
+  --reconcile-ordinal 7
+```
+
 ## Connection settings
 
 Supported address forms:

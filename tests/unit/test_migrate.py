@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from typedb_ops_spine import migrate
+from typedb_ops_spine.schema_version import SchemaVersionReconcileRequired
 
 
 class _TxContext:
@@ -53,6 +55,23 @@ class _RowsAnswer:
     def as_ok(self):
         self.as_ok_called = True
         raise AssertionError("as_ok should not be called when rows are present")
+
+
+class _OkAnswer:
+    def __init__(self):
+        self.as_ok_called = False
+
+    def is_concept_rows(self) -> bool:
+        return False
+
+    def is_concept_documents(self) -> bool:
+        return False
+
+    def is_ok(self) -> bool:
+        return True
+
+    def as_ok(self) -> None:
+        self.as_ok_called = True
 
 
 @pytest.fixture
@@ -193,8 +212,95 @@ def test_apply_migration_exposes_non_atomic_schema_then_stamp_split(
     driver = MagicMock()
     driver.transaction.side_effect = [_TxContext(schema_tx), _TxContext(write_tx)]
 
-    with pytest.raises(RuntimeError, match="Failed WRITE transaction"):
+    with pytest.raises(SchemaVersionReconcileRequired) as exc_info:
         migrate.apply_migration(driver, "ops_db", migration_file, 2)
 
     schema_tx.commit.assert_called_once()
     write_tx.commit.assert_not_called()
+    assert exc_info.value.target_ordinal == 2
+    assert "--reconcile-ordinal 2" in exc_info.value.recovery_command
+
+
+def test_apply_migration_emits_reconcile_required_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_transaction_type,
+):
+    monkeypatch.setenv("CI_ARTIFACTS_DIR", str(tmp_path))
+    migration_file = tmp_path / "002_add_tenant.tql"
+    migration_file.write_text("define entity tenant;", encoding="utf-8")
+
+    schema_tx = MagicMock()
+    schema_tx.query.return_value = _Promise(answer=object())
+
+    write_tx = MagicMock()
+    write_tx.query.return_value = _Promise(error=RuntimeError("write failed"))
+
+    driver = MagicMock()
+    driver.transaction.side_effect = [_TxContext(schema_tx), _TxContext(write_tx)]
+
+    with pytest.raises(SchemaVersionReconcileRequired):
+        migrate.apply_migration(driver, "ops_db", migration_file, 2)
+
+    diag_path = tmp_path / "migrate_diagnostics.jsonl"
+    records = [json.loads(line) for line in diag_path.read_text(encoding="utf-8").splitlines()]
+    reconcile_records = [
+        record for record in records if record["stage"] == "reconcile_required"
+    ]
+    assert len(reconcile_records) == 1
+    assert reconcile_records[0]["target_ordinal"] == 2
+    assert "--reconcile-ordinal 2" in reconcile_records[0]["recovery_command"]
+
+
+def test_reconcile_migration_ordinal_writes_only_version_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_transaction_type,
+):
+    (tmp_path / "001_bootstrap.tql").write_text(
+        "define schema_version sub entity, owns ordinal, owns git-commit, owns applied-at;",
+        encoding="utf-8",
+    )
+    (tmp_path / "002_next.tql").write_text("define entity tenant;", encoding="utf-8")
+
+    monkeypatch.setattr(migrate, "get_current_schema_version", lambda *_args: 0)
+
+    write_tx = MagicMock()
+    ok_answer = _OkAnswer()
+    write_tx.query.return_value = _Promise(answer=ok_answer)
+    driver = MagicMock()
+    driver.transaction.return_value = _TxContext(write_tx)
+
+    migrate.reconcile_migration_ordinal(driver, "ops_db", tmp_path, 2)
+
+    driver.transaction.assert_called_once_with("ops_db", fake_transaction_type.WRITE)
+    write_tx.commit.assert_called_once()
+    assert ok_answer.as_ok_called is True
+
+
+def test_rerun_after_reconcile_has_no_pending_migrations(monkeypatch, tmp_path: Path):
+    (tmp_path / "001_bootstrap.tql").write_text(
+        "define schema_version sub entity, owns ordinal, owns git-commit, owns applied-at;",
+        encoding="utf-8",
+    )
+    state = {"ordinal": 0}
+
+    monkeypatch.setattr(migrate, "get_current_schema_version", lambda *_args: state["ordinal"])
+
+    def _fake_write(*_args, **_kwargs):
+        state["ordinal"] = 1
+
+    monkeypatch.setattr(migrate, "_write_schema_version_record", _fake_write)
+    driver = MagicMock()
+
+    migrate.reconcile_migration_ordinal(driver, "ops_db", tmp_path, 1)
+
+    apply_calls: list[str] = []
+    monkeypatch.setattr(
+        migrate,
+        "apply_migration",
+        lambda *_args, **_kwargs: apply_calls.append("called"),
+    )
+
+    assert migrate.run_migrations(driver, "ops_db", tmp_path) == 0
+    assert apply_calls == []

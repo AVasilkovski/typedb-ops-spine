@@ -63,9 +63,20 @@ def main() -> int:
         action="store_true",
         help="Allow gaps in migration ordinals (not recommended).",
     )
+    p.add_argument(
+        "--reconcile-ordinal",
+        type=int,
+        default=None,
+        help="Record a missing schema_version ordinal without rerunning SCHEMA migrations.",
+    )
     args = p.parse_args()
 
-    from typedb_ops_spine.migrate import get_migrations, run_migrations
+    from typedb_ops_spine.migrate import (
+        SchemaVersionReconcileRequired,
+        get_migrations,
+        reconcile_migration_ordinal,
+        run_migrations,
+    )
     from typedb_ops_spine.readiness import (
         TypeDBConfigError,
         connect_with_retries,
@@ -77,6 +88,28 @@ def main() -> int:
     ca_path = os.getenv("TYPEDB_ROOT_CA_PATH") or None
 
     mig_dir = Path(args.migrations_dir)
+    if args.reconcile_ordinal is not None:
+        conflicts: list[str] = []
+        if args.dry_run:
+            conflicts.append("--dry-run")
+        if args.target is not None:
+            conflicts.append("--target")
+        if args.recreate:
+            conflicts.append("--recreate")
+        if conflicts:
+            print(
+                "[ops-migrate] ERROR: --reconcile-ordinal cannot be combined with "
+                f"{', '.join(conflicts)}",
+                file=sys.stderr,
+            )
+            return 1
+        if not mig_dir.is_dir():
+            print(
+                f"[ops-migrate] ERROR: Migrations directory not found: {mig_dir}",
+                file=sys.stderr,
+            )
+            return 1
+
     if not mig_dir.is_dir():
         print(
             f"[ops-migrate] WARNING: Migrations directory not found: {mig_dir}",
@@ -132,15 +165,35 @@ def main() -> int:
 
         ensure_database(driver, args.database)
 
-        applied = run_migrations(
-            driver,
-            args.database,
-            mig_dir,
-            target=args.target,
-            dry_run=args.dry_run,
-            allow_gaps=args.allow_gaps,
-        )
-        print(f"[ops-migrate] Done. Applied {applied} migrations.")
+        if args.reconcile_ordinal is not None:
+            reconcile_migration_ordinal(
+                driver,
+                args.database,
+                mig_dir,
+                args.reconcile_ordinal,
+                allow_gaps=args.allow_gaps,
+            )
+            print(
+                "[ops-migrate] Reconciled schema_version ordinal "
+                f"{args.reconcile_ordinal}."
+            )
+        else:
+            applied = run_migrations(
+                driver,
+                args.database,
+                mig_dir,
+                target=args.target,
+                dry_run=args.dry_run,
+                allow_gaps=args.allow_gaps,
+            )
+            print(f"[ops-migrate] Done. Applied {applied} migrations.")
+    except SchemaVersionReconcileRequired as e:
+        print(f"[ops-migrate] ERROR: {e}", file=sys.stderr)
+        print(f"[ops-migrate] Recovery: {e.recovery_command}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"[ops-migrate] ERROR: {e}", file=sys.stderr)
+        return 1
     finally:
         driver.close()
 

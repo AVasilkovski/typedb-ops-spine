@@ -24,6 +24,7 @@ from typedb_ops_spine.schema_health import (
     SchemaHealthReport,
     run_health_checks,
 )
+from typedb_ops_spine.schema_version import SchemaVersionReconcileRequired
 from typedb_ops_spine.typedb_diag import run_smoke_diagnostics
 
 __version__ = "0.2.0"
@@ -45,5 +46,6 @@ __all__ = [
     "SchemaHealthExtraResult",
     "SchemaHealthReport",
     "run_health_checks",
+    "SchemaVersionReconcileRequired",
     "run_smoke_diagnostics",
 ]
