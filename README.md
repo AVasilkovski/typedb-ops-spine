@@ -1,6 +1,6 @@
 # typedb-ops-spine
 
-Deterministic TypeDB 3.8 schema operations, smoke diagnostics, and CI forensics.
+Packaged TypeDB 3.8 schema deployment and migration toolkit with deterministic apply, parity checks, readiness validation, diagnostics, and reconcile guidance.
 
 [![CI](https://github.com/AVasilkovski/typedb-ops-spine/actions/workflows/ci.yml/badge.svg)](https://github.com/AVasilkovski/typedb-ops-spine/actions)
 
@@ -17,6 +17,24 @@ Do not rely on `pip install typedb-ops-spine` until a real package release exist
 
 Private beta notes live in [PRIVATE_BETA.md](PRIVATE_BETA.md). Release history
 lives in [CHANGELOG.md](CHANGELOG.md).
+
+## Who It Is For
+
+- engineers and operators managing TypeDB schema through scripts or CI/CD
+
+## What It Is Not
+
+- not an ORM or query builder
+- not a GUI schema tool
+- not a full observability platform
+
+## Runbooks and Proof
+
+- [PRIVATE_BETA.md](PRIVATE_BETA.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [docs/LOCAL_DEMO.md](docs/LOCAL_DEMO.md)
+- [docs/FAILURE_RECOVERY.md](docs/FAILURE_RECOVERY.md)
+- [docs/PROOF.md](docs/PROOF.md)
 
 ## Recent operator-facing changes
 
