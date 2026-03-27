@@ -183,6 +183,3 @@ pytest tests/integration/ -q
 
 Integration tests use the same protocol-level readiness path as operators. If TypeDB is not query-ready with the configured address, auth, and TLS settings, they skip.
 
-## SuperHyperion adoption note
-
-If another repo wants to consume `typedb-ops-spine` before a package release exists, use a pinned VCS dependency instead of `typedb-ops-spine>=...`.
